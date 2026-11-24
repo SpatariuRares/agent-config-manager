@@ -36,4 +36,25 @@ export interface PluginCli {
   mcpAdd(name: string, json: string, scope: string, cwd: string | null): Promise<CliResult>
   /** Runs `claude mcp remove <name> --scope <scope>`; `cwd` is the project folder (null: home). */
   mcpRemove(name: string, scope: string, cwd: string | null): Promise<CliResult>
+  /**
+   * Runs `claude plugin update <id> --scope <scope> --json`, plus `--accept-command <sha256>` only when the user
+   * confirmed that command; never `-y`. `cwd` is the project folder for a project or local install (null: home).
+   */
+  pluginUpdate(id: string, scope: string, cwd: string | null, acceptCommand?: string): Promise<CliResult>
+  /** Runs `claude plugin marketplace update`. */
+  marketplaceUpdate(): Promise<CliResult>
+  /** Runs `npx -y skills update <name> -g -y` (a skill installed globally by the `skills` CLI). */
+  skillsUpdate(name: string): Promise<CliResult>
+  /** Runs `git <args>` in `cwd`, for read-only questions such as `rev-parse`. */
+  git(args: string[], cwd: string): Promise<CliResult>
+}
+
+export type HttpResult =
+  | { ok: true; status: number; json: unknown }
+  /** `rateLimited` when the server refused because too many requests were made (e.g. GitHub's hourly limit). */
+  | { ok: false; status: number | null; error: string; rateLimited: boolean }
+
+/** Read-only HTTP for update checks. Never throws: failures come back as results. */
+export interface Http {
+  getJson(url: string): Promise<HttpResult>
 }

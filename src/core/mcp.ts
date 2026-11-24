@@ -109,3 +109,27 @@ async function backUpFiles(fs: FileSystem, paths: ClaudePaths, places: Place[], 
   }
   return backups
 }
+
+/**
+ * Replaces a server's config in its own place: backs up its file, then `claude mcp remove` and `claude mcp add-json`
+ * with the new config. A failed remove changes nothing; a failed add after it is `partial` (the server is gone,
+ * its old config is in the backup).
+ */
+export async function replaceMcp(
+  fs: FileSystem,
+  cli: PluginCli,
+  paths: ClaudePaths,
+  ref: McpRef,
+  config: Json,
+  versions: Record<string, string>,
+  clock: Clock
+): Promise<McpResult> {
+  const stale = await staleFile(fs, paths, [ref], versions)
+  if (stale !== null) return { ok: false, reason: 'changed', message: `${stale} changed since it was read. Refresh and try again.`, backups: [] }
+  const backups = await backUpFiles(fs, paths, [ref], clock)
+  const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
+  if (!removed.ok) return { ok: false, reason: 'cli-failed', message: removed.output, backups }
+  const added = await cli.mcpAdd(ref.name, JSON.stringify(config), cliScope(ref), ref.project)
+  if (!added.ok) return { ok: false, reason: 'partial', message: added.output, backups }
+  return { ok: true, backups }
+}

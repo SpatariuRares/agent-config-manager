@@ -4,9 +4,21 @@ import { isTrashName, listAllBackups, restoreTrash, snapshot, trashEntry } from 
 import { moveEntry } from '../core/entries.ts'
 import { moveHook, removeHook, type HookRef } from '../core/hooks.ts'
 import { effectiveState, isObject, projectSettingsFile, settingsFile, type ProjectScope } from '../core/inventory.ts'
-import { moveMcp, removeMcp, type McpRef } from '../core/mcp.ts'
+import { moveMcp, removeMcp, replaceMcp, type McpRef } from '../core/mcp.ts'
 import { movePlugin } from '../core/plugin-move.ts'
-import type { ClaudePaths, FileSystem, PluginCli } from '../core/ports.ts'
+import type { ClaudePaths, FileSystem, Http, PluginCli } from '../core/ports.ts'
+import { updatePlugin, updateSkill } from '../core/update-run.ts'
+import {
+  compareVersions,
+  latestNpmVersion,
+  mcpTarget,
+  pluginTarget,
+  readInstalls,
+  readSkillLock,
+  skillTarget,
+  withPinnedVersion,
+  type UpdateTarget
+} from '../core/update-sources.ts'
 import { placeFile, readSetup, type Entry, type Place, type ScopedHook, type ScopedMcp, type Setup } from '../core/setup.ts'
 import {
   backupDir,
@@ -24,6 +36,8 @@ export interface BackendDeps {
   cli: PluginCli
   paths: ClaudePaths
   clock?: Clock
+  /** The network, for update checks and npm updates only. */
+  http?: Http
 }
 
 /** What an item key points at in the setup. */
@@ -37,6 +51,8 @@ interface Read {
   setup: Setup
   view: View
   refs: Map<string, Ref>
+  /** Update sources by item key, with what checking and updating them needs. */
+  targets: Map<string, UpdateTarget>
 }
 
 export async function buildView(deps: BackendDeps): Promise<ViewAnswer> {
@@ -45,6 +61,12 @@ export async function buildView(deps: BackendDeps): Promise<ViewAnswer> {
   } catch (error) {
     return { ok: false, error: String(error) }
   }
+}
+
+/** The items and their update sources, for the update check. */
+export async function readUpdateTargets(deps: BackendDeps): Promise<{ items: Item[]; targets: Map<string, UpdateTarget> }> {
+  const { view, targets } = await read(deps)
+  return { items: view.items, targets }
 }
 
 /** Runs one action, then reads the setup again so the answer never carries stale data. Never throws. */
@@ -123,9 +145,17 @@ async function perform(deps: BackendDeps, request: ActionRequest): Promise<Outco
     return done(`Restored ${label.path(target)} from its backup.`, restoreOf(restored.backup))
   }
 
+  if (action.type === 'refreshMarketplaces') {
+    const refreshed = await cli.marketplaceUpdate()
+    if (!refreshed.ok) return refuse('cli-failed', `Could not refresh the plugin marketplaces: ${refreshed.output.trim()}`)
+    return done('Refreshed the plugin marketplaces. Check for updates again to see what is new.', undefined, false)
+  }
+  if (action.type === 'updateAll') return updateAll(deps, clock, action, versions)
+
   const before = await read(deps)
-  const ref = typeof action.key === 'string' ? before.refs.get(action.key) : undefined
-  const item = before.view.items.find((i) => i.key === action.key)
+  const key: unknown = (action as { key?: unknown }).key
+  const ref = typeof key === 'string' ? before.refs.get(key) : undefined
+  const item = before.view.items.find((i) => i.key === key)
   if (ref === undefined || item === undefined) {
     return refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
   }
@@ -192,6 +222,9 @@ async function perform(deps: BackendDeps, request: ActionRequest): Promise<Outco
 
     case 'move':
       return move(deps, clock, before, ref, item, action, versions)
+
+    case 'update':
+      return update(deps, clock, before, ref, item, typeof action.acceptCommand === 'string' ? action.acceptCommand : undefined, versions)
 
     default:
       return refuse('unsupported', `Unknown action ${String((action as { type: unknown }).type)}.`)
@@ -267,6 +300,138 @@ async function move(
   const newKey = pluginKey(to.project, to.scope, ref.id)
   const outcome = done(message, pluginUndo(before, ref, to, copy, newKey, back))
   return to.project === null ? outcome : { ...outcome, check: { id: ref.id, project: to.project, scope: to.scope as ProjectScope, enabled } }
+}
+
+const cap = (text: string) => `${text[0].toUpperCase()}${text.slice(1)}`
+const RESTART = 'Restart Claude Code to use the new version.'
+const short = (value: string | null) => (value === null ? 'unknown' : /^[0-9a-f]{13,}$/.test(value) ? value.slice(0, 12) : value)
+
+/** Updates one item from its update source. A command the marketplace asks to approve is returned, never accepted. */
+async function update(
+  deps: BackendDeps,
+  clock: Clock,
+  before: Read,
+  ref: Ref,
+  item: Item,
+  acceptCommand: string | undefined,
+  versions: Record<string, string>
+): Promise<Outcome> {
+  const { fs, cli, paths } = deps
+  const target = before.targets.get(item.key)
+  const named = `${NOUN[item.kind]} "${item.name}"`
+  if (target === undefined) {
+    if (ref.kind === 'plugins') {
+      const owner = before.view.items.find((i) => i.plugin?.id === ref.id && before.targets.has(i.key))
+      if (owner === undefined) return refuse('unsupported', `${cap(named)} is not installed, so there is nothing to update.`)
+      return refuse('unsupported', `Update ${named} from its item in ${labels(paths).place(owner.kind, owner.project, owner.scope)}.`)
+    }
+    return refuse('unsupported', `${cap(named)} has no update source: it was not installed from a marketplace, the skills CLI or a pinned npm package.`)
+  }
+
+  if (target.type === 'manual') return refuse('unsupported', `This app does not update ${named}. ${target.source.note ?? ''}`.trim())
+
+  if (target.type === 'plugin') {
+    const result = await updatePlugin(fs, cli, paths, target.id, acceptCommand)
+    if (!result.ok && result.reason === 'needs-confirmation') {
+      return {
+        result: {
+          ok: false,
+          reason: 'needs-confirmation',
+          message: `Updating ${named} runs a command declared by its marketplace. Review it, then confirm to continue: ${result.command}`,
+          confirm: { command: result.command, action: { type: 'update', key: item.key, acceptCommand: result.sha256 } }
+        }
+      }
+    }
+    const label = labels(paths)
+    const changed = result.changes.filter((change) => change.before !== change.after)
+    const describe = result.changes.map((change) => {
+      const where = change.project === null ? 'global' : `${label.path(change.project)} (${change.scope})`
+      return change.before === change.after
+        ? `${where}: already at ${short(change.after)}`
+        : `${where}: ${short(change.before)} to ${short(change.after)}`
+    })
+    if (!result.ok) {
+      const soFar = describe.length > 0 ? ` Updated so far: ${describe.join('; ')}.` : ''
+      return refuse(result.reason, `Could not update ${named}: ${result.message.trim()}${soFar}`)
+    }
+    if (changed.length === 0) {
+      return done(`${cap(named)} is already at ${short(result.changes[0]?.after ?? null)}; nothing changed.`, undefined, false)
+    }
+    const message =
+      result.changes.length === 1
+        ? `Updated ${named} from ${short(changed[0].before)} to ${short(changed[0].after)}.`
+        : `Updated ${named}: ${describe.join('; ')}.`
+    return done(`${message} ${RESTART}`, undefined, false)
+  }
+
+  if (target.type === 'skills-cli') {
+    const result = await updateSkill(fs, cli, paths, target.name)
+    if (!result.ok) return refuse(result.reason, `Could not update ${named}: ${result.message}`)
+    if (result.before === result.after) return done(`${cap(named)} from ${target.repo} is already up to date.`, undefined, false)
+    return done(`Updated ${named} from ${target.repo} (${short(result.before)} to ${short(result.after)}).`)
+  }
+
+  // npm: rewrite the pinned version through the CLI, in the server's own scope.
+  if (ref.kind !== 'mcp') return refuse('unsupported', `${named} has no npm package to update.`)
+  if (deps.http === undefined) return refuse('unsupported', 'Updating an npm package needs the network, which is not available here.')
+  const latest = await latestNpmVersion(deps.http, target.pkg)
+  if (!latest.ok) return refuse('check-failed', `Could not get the latest version of ${target.pkg} from npm: ${latest.error}`)
+  const order = compareVersions(latest.version, target.version)
+  if (order === null || order <= 0) {
+    return done(`${cap(named)} is already at the latest version (${target.version}).`, undefined, false)
+  }
+  const server = ref.server
+  const replaced = await replaceMcp(fs, cli, paths, mcpRef(server), withPinnedVersion(server.config, latest.version), versions, clock)
+  const from = labels(paths).place(item.kind, item.project, item.scope)
+  const pinned = `${target.pkg}@${latest.version}`
+  if (!replaced.ok) {
+    if (replaced.reason === 'partial') {
+      const backup = replaced.backups[0] ? ` Its previous config is in the backup ${labels(paths).path(replaced.backups[0])}.` : ''
+      return refuse('partial', `Removed ${named} from ${from}, but adding it back with ${pinned} failed: ${replaced.message.trim()}.${backup}`)
+    }
+    if (replaced.reason === 'cli-failed') return refuse('cli-failed', `Could not update ${named}: removing it failed, so nothing changed: ${replaced.message.trim()}`)
+    return refuse(replaced.reason, replaced.message)
+  }
+  const undo = replaced.backups.find((backup) => backupTarget(paths, fileName(backup)) !== paths.userConfigFile)
+  return done(`Updated ${named} from ${target.pkg}@${target.version} to ${latest.version} in ${from}.`, restoreOf(undo))
+}
+
+/** Updates each key in turn and reports every outcome. A key that needs a command approved is skipped. */
+async function updateAll(
+  deps: BackendDeps,
+  clock: Clock,
+  action: Extract<Action, { type: 'updateAll' }>,
+  versions: Record<string, string>
+): Promise<Outcome> {
+  const keys = Array.isArray(action.keys) ? action.keys.filter((key): key is string => typeof key === 'string') : []
+  if (keys.length === 0) return refuse('unsupported', 'There is nothing to update.')
+  const lines: string[] = []
+  let updated = 0
+  for (const key of keys) {
+    const current = await read(deps)
+    const ref = current.refs.get(key)
+    const item = current.view.items.find((i) => i.key === key)
+    if (ref === undefined || item === undefined) {
+      lines.push(`${key}: no longer there, skipped.`)
+      continue
+    }
+    const named = `${NOUN[item.kind]} "${item.name}"`
+    if (item.kind !== action.kind) {
+      lines.push(`${named}: not in this tab, skipped.`)
+      continue
+    }
+    // Files this run already changed have new versions; the rest are checked against the view the user acted on.
+    const outcome = await update(deps, clock, current, ref, item, undefined, updated > 0 ? current.view.versions : versions)
+    if (outcome.result.ok) updated++
+    if (!outcome.result.ok && outcome.result.reason === 'needs-confirmation') {
+      lines.push(`${named}: needs your approval of a command declared by its marketplace, so it was skipped. Update it on its own to review the command.`)
+    } else {
+      lines.push(outcome.result.message.replace(` ${NOTE}`, ''))
+    }
+  }
+  const message = `Updated ${updated} of ${keys.length}:\n${lines.map((line) => `- ${line}`).join('\n')}`
+  if (updated === keys.length) return done(message, undefined, false)
+  return refuse(updated > 0 ? 'partial' : 'failed', message)
 }
 
 /** An undo for a plugin move, only when sending it puts every file back exactly as it was. */
@@ -348,6 +513,14 @@ async function read(deps: BackendDeps): Promise<Read> {
     refs.set(item.key, ref)
   }
   const base = { movable: true, description: '' }
+  const targets = new Map<string, UpdateTarget>()
+  const withSource = (item: Item, target: UpdateTarget | null): Item => {
+    if (target === null) return item
+    targets.set(item.key, target)
+    return { ...item, updateSource: target.source }
+  }
+  const installs = await readInstalls(fs, paths)
+  const lock = await readSkillLock(fs, paths)
 
   for (const plugin of setup.inventory.plugins) {
     const info = {
@@ -358,9 +531,12 @@ async function read(deps: BackendDeps): Promise<Read> {
       installs: plugin.installs
     }
     const description = plugin.marketplace ? `from ${plugin.marketplace}` : ''
-    if (setup.globalPlugins.includes(plugin.id)) {
+    // One item per plugin carries its update source: the global one, else the first project override.
+    const target = pluginTarget(plugin.id, installs.get(plugin.id) ?? [])
+    const global = setup.globalPlugins.includes(plugin.id)
+    if (global) {
       add(
-        {
+        withSource({
           ...base,
           key: pluginKey(null, 'user', plugin.id),
           kind: 'plugins',
@@ -371,13 +547,13 @@ async function read(deps: BackendDeps): Promise<Read> {
           source: settingsFile(paths),
           removable: false,
           plugin: { ...info, enabled: plugin.enabled, installed: plugin.installs.length > 0 }
-        },
+        }, target),
         { kind: 'plugins', id: plugin.id, project: null, scope: 'user', enabled: plugin.enabled }
       )
     }
-    for (const override of plugin.overrides) {
+    plugin.overrides.forEach((override, n) => {
       add(
-        {
+        withSource({
           ...base,
           key: pluginKey(override.project, override.scope, plugin.id),
           kind: 'plugins',
@@ -388,17 +564,17 @@ async function read(deps: BackendDeps): Promise<Read> {
           source: projectSettingsFile(override.project, override.scope),
           removable: true,
           plugin: { ...info, enabled: override.enabled, installed: false }
-        },
+        }, !global && n === 0 ? target : null),
         { kind: 'plugins', id: plugin.id, project: override.project, scope: override.scope, enabled: override.enabled }
       )
-    }
+    })
   }
 
   for (const entry of setup.entries) {
     // A relative link points somewhere else once the link sits in another folder.
     const relative = entry.link !== null && !entry.link.startsWith('/')
     add(
-      {
+      withSource({
         key: entryKey(entry.kind, entry.entry),
         kind: entry.kind,
         name: entry.name,
@@ -409,14 +585,14 @@ async function read(deps: BackendDeps): Promise<Read> {
         movable: !relative,
         ...(relative ? { notMovableReason: `It is a relative link (${entry.link}); moving it would break it.` } : {}),
         removable: true
-      },
+      }, entry.kind === 'skills' ? await skillTarget(fs, paths, lock, entry) : null),
       { kind: 'entry', entry }
     )
   }
 
   for (const server of setup.mcpServers) {
     add(
-      {
+      withSource({
         ...base,
         key: mcpKey(server.project, server.scope, server.name),
         kind: 'mcp',
@@ -427,7 +603,7 @@ async function read(deps: BackendDeps): Promise<Read> {
         source: server.file,
         removable: true,
         mcp: { transport: server.transport, target: server.target }
-      },
+      }, await mcpTarget(fs, server.config)),
       { kind: 'mcp', server }
     )
   }
@@ -458,7 +634,7 @@ async function read(deps: BackendDeps): Promise<Read> {
     backups,
     problems: setup.problems
   }
-  return { setup, view, refs }
+  return { setup, view, refs, targets }
 }
 
 const KINDS: Kind[] = ['plugins', 'skills', 'agents', 'mcp', 'hooks']
