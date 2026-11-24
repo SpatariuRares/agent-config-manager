@@ -350,7 +350,7 @@ function renderAgent() {
       agent.detected ? null : h('span', { class: 'tag tag-missing' }, 'Not installed'),
       h('span', { class: 'agent-home', title: agent.configHome }, agent.configHome),
     ),
-    agent.note ? h('p', { class: 'agent-note' }, icon('info', 12), h('span', null, agent.note)) : null,
+    agent.note ? agentNote(agent.note) : null,
   )
 }
 
@@ -1365,3 +1365,19 @@ load()
 setInterval(() => {
   if (state.updates.checkedAt && !state.updates.checking) renderUpdatesBar()
 }, 30_000)
+
+/** The agent's note, kept to two lines until the user asks for the rest. */
+function agentNote(note) {
+  const text = h('span', { class: 'agent-note-text' }, note)
+  const long = note.length > 140
+  const box = h('div', { class: 'agent-note' }, icon('info', 12), text)
+  if (!long) return box
+  const toggle = h('button', { type: 'button', class: 'agent-note-more', 'aria-expanded': 'false' }, 'More')
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('is-open')
+    toggle.textContent = open ? 'Less' : 'More'
+    toggle.setAttribute('aria-expanded', String(open))
+  })
+  box.append(toggle)
+  return box
+}

@@ -277,6 +277,33 @@ code {
 }
 .agent-note .icon {
   margin-top: 2px;
+  flex: none;
+}
+.agent-note-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.agent-note.is-open .agent-note-text {
+  display: block;
+}
+.agent-note-more {
+  flex: none;
+  align-self: flex-end;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.agent-note-more:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 /* ---------- Buttons ---------- */

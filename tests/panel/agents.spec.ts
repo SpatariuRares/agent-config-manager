@@ -295,3 +295,13 @@ test('no horizontal scroll at 320px, for every agent and the switcher menu', asy
     await expect(switcher(page)).toBeFocused()
   }
 })
+
+test('a long agent note shows two lines until More is pressed', async ({ page }) => {
+  await open(page)
+  await pickAgent(page, 'Codex')
+  const text = page.locator('.agent-note-text')
+  expect(await text.evaluate((el) => el.scrollHeight > el.clientHeight + 1)).toBe(true)
+  await page.getByRole('button', { name: 'More' }).click()
+  await expect(page.getByRole('button', { name: 'Less' })).toHaveAttribute('aria-expanded', 'true')
+  expect(await text.evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true)
+})

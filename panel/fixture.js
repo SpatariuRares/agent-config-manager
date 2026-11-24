@@ -226,7 +226,7 @@ const AGENTS = [
     // As the real provider: skills go to the project's own folder; MCP servers never go into a project.
     projectScopes: { skills: ['project'] },
     configHome: '~/.codex',
-    note: 'Plugins, agents and hooks are read-only: this app does not edit config.toml or hooks.json yet.',
+    note: 'Plugins, agents and hooks are read-only: Codex has no command to turn a plugin on or off, and editing hooks.json changes the hashes Codex trusts hooks by. ~/.codex/config.toml is never rewritten here: MCP servers are removed with `codex mcp remove`.',
   },
   {
     id: 'gemini',
