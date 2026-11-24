@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readInventory } from './inventory.ts'
+import { readInventory, versionOf as versionOfText } from './inventory.ts'
 import { listBackups, restoreBackup, setProjectPluginState } from './toggle.ts'
 import { fakeFs, paths } from './test-support.ts'
 
@@ -129,4 +129,73 @@ test("backups of projects with spaces or !*'() in their path can be listed", asy
   const file = `${project}/.claude/settings.local.json`
   await setProjectPluginState(fs, paths, { id: 'a@m', project, scope: 'local', enabled: false, version: '' }, clock)
   assert.deepEqual(await listBackups(fs, paths), [`${encodeURIComponent(file)}.2026-11-24T10-00-00-000Z.json`])
+})
+
+test('a project key that is the home folder spelled differently cannot write the user settings', async () => {
+  for (const alias of ['/home/', '/home/sub/..']) {
+    const user = JSON.stringify({ enabledPlugins: { 'a@m': false } })
+    const fs = fakeFs({
+      '/home/.claude/settings.json': user,
+      '/home/.claude.json': JSON.stringify({ projects: { [alias]: {} } }),
+      '/home/sub/x': '1'
+    })
+    const inventory = await readInventory(fs, paths)
+    assert.deepEqual(inventory.plugins[0].overrides, [], alias)
+    const result = await setProjectPluginState(
+      fs,
+      paths,
+      { id: 'a@m', project: alias, scope: 'project', enabled: true, version: versionOfText(user) },
+      clock
+    )
+    assert.equal(result.ok === false && result.reason, 'unknown-project', alias)
+    assert.equal(fs.files['/home/.claude/settings.json'], user, alias)
+  }
+})
+
+test('restore refuses a backup whose project is no longer known, and creates nothing', async () => {
+  const fs = setup()
+  await setProjectPluginState(
+    fs,
+    paths,
+    { id: 'b@m', project: '/work/shop', scope: 'local', enabled: true, version: '' },
+    clock
+  )
+  const [name] = await listBackups(fs, paths)
+  fs.files['/home/.claude.json'] = JSON.stringify({ projects: {} })
+  for (const key of Object.keys(fs.files)) if (key.startsWith('/work/shop/')) delete fs.files[key]
+  const result = await restoreBackup(fs, paths, { name, settingsVersion: '' }, clock)
+  assert.equal(result.ok === false && result.reason, 'unknown-project')
+  assert.deepEqual(Object.keys(fs.files).filter((key) => key.startsWith('/work/')), [])
+})
+
+test('refuses a project file whose enabledPlugins is not an object', async () => {
+  for (const bad of ['[]', '"x"']) {
+    const fs = setup({ [SHOP_SHARED]: `{"enabledPlugins": ${bad}}` })
+    const result = await setProjectPluginState(
+      fs,
+      paths,
+      { id: 'a@m', project: '/work/shop', scope: 'project', enabled: true, version: await version(fs, SHOP_SHARED) },
+      clock
+    )
+    assert.equal(result.ok === false && result.reason, 'unreadable', bad)
+    assert.equal(fs.files[SHOP_SHARED], `{"enabledPlugins": ${bad}}`)
+  }
+})
+
+test('a plugin installed but only set in another project can be turned on here', async () => {
+  const fs = setup({
+    '/home/.claude/plugins/installed_plugins.json': JSON.stringify({ plugins: { 'c@m': [{ scope: 'user' }] } })
+  })
+  const result = await setProjectPluginState(
+    fs,
+    paths,
+    { id: 'c@m', project: '/work/shop', scope: 'local', enabled: true, version: '' },
+    clock
+  )
+  assert.equal(result.ok, true)
+})
+
+test('a project that only holds dot folders is still listed', async () => {
+  const fs = setup({ '/home/.claude.json': JSON.stringify({ projects: { '/work/shop': {}, '/work/dots': {} } }), '/work/dots/.git/HEAD': 'x' })
+  assert.deepEqual((await readInventory(fs, paths)).projects, ['/work/dots', '/work/shop'])
 })

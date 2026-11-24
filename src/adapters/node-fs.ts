@@ -27,6 +27,14 @@ export const nodeFileSystem: FileSystem = {
       throw error
     }
   },
+  async realPath(path) {
+    try {
+      return await realpath(path)
+    } catch (error) {
+      if (isMissing(error)) return null
+      throw error
+    }
+  },
   async writeText(path, text) {
     // Write through a symlink (dotfiles setups) instead of replacing the link with a plain file.
     const target = await realpath(path).catch((error) => (isMissing(error) ? path : Promise.reject(error)))

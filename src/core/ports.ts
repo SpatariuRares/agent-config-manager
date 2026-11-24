@@ -6,6 +6,8 @@ export interface FileSystem {
   listEntries(dir: string): Promise<string[]>
   /** Replaces the file in one step (no half-written file), creating missing folders. */
   writeText(path: string, text: string): Promise<void>
+  /** The canonical absolute path (`..`, `//` and symlinks resolved), or null when nothing exists there. */
+  realPath(path: string): Promise<string | null>
 }
 
 export interface ClaudePaths {

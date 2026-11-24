@@ -1,6 +1,6 @@
 // The only code that writes the Claude Code setup. Every write backs up the previous file first
 // and refuses when the file changed since the caller read it.
-import { knownProjects, projectSettingsFile, settingsFile, versionOf, type ProjectScope } from './inventory.ts'
+import { isUserSettingsFile, knownProjects, projectSettingsFile, settingsFile, versionOf, type ProjectScope } from './inventory.ts'
 import type { ClaudePaths, FileSystem } from './ports.ts'
 
 export type WriteResult =
@@ -72,17 +72,16 @@ export async function setProjectPluginState(
   clock: Clock = () => new Date()
 ): Promise<WriteResult> {
   const file = projectSettingsFile(change.project, change.scope)
-  if (!(await knownProjects(fs, paths)).includes(change.project) || file === settingsFile(paths)) {
-    return { ok: false, reason: 'unknown-project', message: `${change.project} is not a project Claude Code knows.` }
-  }
-  const user = parse((await fs.readText(settingsFile(paths))) ?? '{}') ?? {}
+  const refused = await projectFileRefusal(fs, paths, change.project, file)
+  if (refused !== null) return refused
   const text = await fs.readText(file)
   if (versionOf(text) !== change.version) return CHANGED
   // A missing project file is created.
   const settings = text === null ? {} : parse(text)
-  if (settings === null) return unreadable(file)
-  const known = Object.hasOwn(user.enabledPlugins ?? {}, change.id) || Object.hasOwn(settings.enabledPlugins ?? {}, change.id)
-  if (!known) return { ok: false, reason: 'unknown-plugin', message: `${change.id} is not a plugin of this setup.` }
+  if (settings === null || !isPlainObject(settings.enabledPlugins ?? {})) return unreadable(file)
+  if (!(await isKnownPlugin(fs, paths, change.id, settings))) {
+    return { ok: false, reason: 'unknown-plugin', message: `${change.id} is not a plugin of this setup.` }
+  }
 
   const plugins: Json = settings.enabledPlugins ?? {}
   if (change.enabled === null ? !Object.hasOwn(plugins, change.id) : plugins[change.id] === change.enabled) {
@@ -121,6 +120,11 @@ export async function restoreBackup(
   const text =
     target !== null && (await listBackups(fs, paths)).includes(name) ? await fs.readText(`${backupDir(paths)}/${name}`) : null
   if (target === null || text === null) return { ok: false, reason: 'unknown-backup', message: `${name} is not a known backup.` }
+  if (target !== settingsFile(paths)) {
+    const project = /^(.+)\/\.claude\/settings(?:\.local)?\.json$/.exec(target)?.[1] ?? ''
+    const refused = await projectFileRefusal(fs, paths, project, target)
+    if (refused !== null) return refused
+  }
   const current = await fs.readText(target)
   if (versionOf(current) !== restore.settingsVersion) return CHANGED
   const backup = await backUp(fs, paths, target, current ?? '{}\n', clock)
@@ -147,10 +151,36 @@ export async function backUp(fs: FileSystem, paths: ClaudePaths, file: string, t
   }
 }
 
+/** Project writes only go to a project Claude Code still lists, and never to the user settings file. */
+async function projectFileRefusal(fs: FileSystem, paths: ClaudePaths, project: string, file: string): Promise<WriteResult | null> {
+  if (!(await knownProjects(fs, paths)).includes(project)) {
+    return { ok: false, reason: 'unknown-project', message: `${project || file} is not a project Claude Code knows.` }
+  }
+  if (await isUserSettingsFile(fs, paths, file)) {
+    return {
+      ok: false,
+      reason: 'unknown-project',
+      message: `${project} is your home folder: its team settings are the global settings. Use "Only me" or the global switch.`
+    }
+  }
+  return null
+}
+
+/** A plugin this setup knows: in the user settings, installed, or already in the file being changed. */
+async function isKnownPlugin(fs: FileSystem, paths: ClaudePaths, id: string, file: Json): Promise<boolean> {
+  const user = parse((await fs.readText(settingsFile(paths))) ?? '{}') ?? {}
+  const installed = parse((await fs.readText(`${paths.claudeDir}/plugins/installed_plugins.json`)) ?? '{}') ?? {}
+  return [user.enabledPlugins, installed.plugins, file.enabledPlugins].some((map) => isPlainObject(map) && Object.hasOwn(map, id))
+}
+
+function isPlainObject(value: unknown): value is Json {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function parse(text: string): Json | null {
   try {
     const value = JSON.parse(text)
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null
+    return isPlainObject(value) ? value : null
   } catch {
     return null
   }

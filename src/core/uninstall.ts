@@ -30,9 +30,17 @@ export async function uninstallPlugin(
     return { ok: false, reason: 'unknown-plugin', message: `${id} is not installed.`, backups: [] }
   }
 
+  // A project or local install needs its folder: the CLI finds the project from its working directory.
+  const failures: string[] = []
+  const runnable = records.filter((record) => {
+    if (record.scope === 'user' || record.project !== null) return true
+    failures.push(`${record.scope}: no project folder recorded, skipped`)
+    return false
+  })
+
   // The CLI also edits enabledPlugins in these files: keep a copy of each first.
   const backups: string[] = []
-  const files = records.map((record) =>
+  const files = runnable.map((record) =>
     record.project === null ? settingsFile(paths) : projectSettingsFile(record.project, record.scope === 'local' ? 'local' : 'project')
   )
   for (const file of [...new Set(files)]) {
@@ -40,8 +48,7 @@ export async function uninstallPlugin(
     if (text !== null) backups.push(await backUp(fs, paths, file, text, clock))
   }
 
-  const failures: string[] = []
-  for (const record of records) {
+  for (const record of runnable) {
     const { ok, output } = await cli.uninstall(id, record.scope, record.project)
     if (!ok) failures.push(`${record.scope}${record.project ? ` (${record.project})` : ''}: ${output.trim()}`)
   }

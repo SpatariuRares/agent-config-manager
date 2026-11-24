@@ -52,3 +52,15 @@ test('reports which installs the CLI could not remove', async () => {
   assert.match(result.ok === false ? result.message : '', /project \(\/work\/shop\): cannot uninstall from project/)
   assert.deepEqual(cli.calls, ['a@m user -', 'a@m project /work/shop'])
 })
+
+test('a project install record without its folder is reported, not run in the home folder', async () => {
+  const files = fakeFs({
+    '/home/.claude/settings.json': userSettings,
+    '/home/.claude/plugins/installed_plugins.json': JSON.stringify({ plugins: { 'a@m': [{ scope: 'project' }] } })
+  })
+  const cli = fakeCli()
+  const result = await uninstallPlugin(files, cli, paths, 'a@m', clock)
+  assert.equal(result.ok === false && result.reason, 'cli-failed')
+  assert.match(result.ok === false ? result.message : '', /project: no project folder recorded/)
+  assert.deepEqual(cli.calls, [])
+})

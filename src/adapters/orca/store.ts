@@ -1,6 +1,6 @@
 // Panel state and the actions that talk to the worker. Views only read atoms and call actions.
 import { atom, plugin, read, set } from 'orca'
-import { projectSettingsFile, type Inventory, type ProjectScope } from '../../core/inventory.ts'
+import { effectiveState, projectSettingsFile, type Inventory, type ProjectScope } from '../../core/inventory.ts'
 import type { BackupEntry, InventoryAnswer, UninstallAnswer, WriteAnswer } from './protocol.ts'
 
 export type Notice = { tone: 'success' | 'warning' | 'danger'; title: string; text: string; undo?: BackupEntry }
@@ -66,7 +66,16 @@ async function setInProject(id: string, project: string, scope: ProjectScope, en
   const version = inventory()!.versions[projectSettingsFile(project, scope)] ?? ''
   const write = await plugin.request('plugin.setProjectState', { id, project, scope, enabled, version })
   const what = enabled === null ? 'follows the global setting' : `turned ${enabled ? 'on' : 'off'}`
-  show(write, `${id} ${what} in ${projectLabel(project)} (${scope === 'local' ? 'only me' : 'team'})`)
+  await show(write, `${id} ${what} in ${projectLabel(project)} (${scope === 'local' ? 'only me' : 'team'})`)
+  // A team change can be hidden by the user's own (local) setting, which wins.
+  const next = write.inventory.ok ? write.inventory.inventory.plugins.find((p) => p.id === id) : undefined
+  if (write.result.ok && enabled !== null && next && effectiveState(next, project).enabled !== enabled) {
+    set(notice, {
+      tone: 'warning',
+      title: `Saved for the team, but ${id} stays ${enabled ? 'off' : 'on'} for you`,
+      text: `Your own setting in ${projectLabel(project)} (.claude/settings.local.json) wins. Clear it under Projects on the card.`
+    })
+  }
 }
 
 export function uninstall(id: string): Promise<void> {
@@ -87,22 +96,21 @@ export function uninstall(id: string): Promise<void> {
 export function restore(entry: BackupEntry): Promise<void> {
   return change('restore', async () => {
     const settingsVersion = inventory()!.versions[entry.target] ?? ''
-    show(await plugin.request('backup.restore', { name: entry.name, settingsVersion }), `Restored ${projectLabel(entry.target)}`)
+    await show(await plugin.request('backup.restore', { name: entry.name, settingsVersion }), `Restored ${projectLabel(entry.target)}`)
   })
 }
 
-function show(write: WriteAnswer, title: string): void {
+async function show(write: WriteAnswer, title: string): Promise<void> {
   set(answer, write.inventory)
-  void plugin.request('backups.list').then((entries) => {
-    set(backups, entries)
-    const { result } = write
-    set(
-      notice,
-      !result.ok
-        ? { tone: result.reason === 'changed' ? 'warning' : 'danger', title: 'Nothing was changed', text: result.message }
-        : result.backup === null
-          ? { tone: 'success', title: 'Already set', text: 'Nothing needed changing.' }
-          : { tone: 'success', title, text: APPLIES, undo: entries.find((e) => result.backup!.endsWith(`/${e.name}`)) }
-    )
-  })
+  const entries = await plugin.request('backups.list')
+  set(backups, entries)
+  const { result } = write
+  set(
+    notice,
+    !result.ok
+      ? { tone: result.reason === 'changed' ? 'warning' : 'danger', title: 'Nothing was changed', text: result.message }
+      : result.backup === null
+        ? { tone: 'success', title: 'Already set', text: 'Nothing needed changing.' }
+        : { tone: 'success', title, text: APPLIES, undo: entries.find((e) => result.backup!.endsWith(`/${e.name}`)) }
+  )
 }

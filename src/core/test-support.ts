@@ -1,20 +1,29 @@
 // Shared test doubles for the core.
+import { posix } from 'node:path'
 import type { FileSystem, PluginCli } from './ports.ts'
 
 export const paths = { claudeDir: '/home/.claude', userConfigFile: '/home/.claude.json' }
 
-/** An in-memory FileSystem over a flat path -> text map; directories are implied by paths. */
+/**
+ * An in-memory FileSystem over a flat path -> text map; directories are implied by paths.
+ * Paths are normalized like a real disk (`//` and `..`), so aliases reach the same file.
+ */
 export function fakeFs(files: Record<string, string>): FileSystem & { files: Record<string, string> } {
+  const norm = (path: string) => posix.normalize(path).replace(/(.)\/$/, '$1')
   return {
     files,
     async readText(path) {
-      return files[path] ?? null
+      return files[norm(path)] ?? null
     },
     async writeText(path, text) {
-      files[path] = text
+      files[norm(path)] = text
+    },
+    async realPath(path) {
+      const target = norm(path)
+      return Object.keys(files).some((key) => key === target || key.startsWith(`${target}/`)) ? target : null
     },
     async listEntries(dir) {
-      const prefix = `${dir}/`
+      const prefix = `${norm(dir)}/`
       const names = Object.keys(files)
         .filter((path) => path.startsWith(prefix))
         .map((path) => path.slice(prefix.length).split('/')[0])

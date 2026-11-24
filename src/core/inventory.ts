@@ -91,8 +91,8 @@ export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise
   for (const project of projects) {
     for (const scope of ['project', 'local'] as const) {
       const file = projectSettingsFile(project, scope)
-      // For the home folder, the "project" file is the user settings file itself.
-      if (file === settingsFile(paths)) continue
+      // For the home folder (however it is spelled), the "project" file is the user settings file itself.
+      if (await isUserSettingsFile(fs, paths, file)) continue
       versions[file] = versionOf(await fs.readText(file))
       for (const [id, enabled] of Object.entries((await readJson(fs, file, problems)).enabledPlugins ?? {})) {
         overrides.push({ id, project, scope, enabled: enabled === true })
@@ -127,6 +127,16 @@ export function effectiveState(plugin: Plugin, project: string): { enabled: bool
   return { enabled: plugin.enabled, from: 'user' }
 }
 
+/** Whether `file` is the user settings file, comparing real paths so aliases and symlinks count. */
+export async function isUserSettingsFile(fs: FileSystem, paths: ClaudePaths, file: string): Promise<boolean> {
+  const split = (path: string) => [path.slice(0, path.lastIndexOf('/')), path.slice(path.lastIndexOf('/') + 1)]
+  const [dir, name] = split(file)
+  const [userDir, userName] = split(settingsFile(paths))
+  if (name !== userName) return false
+  const real = await fs.realPath(dir)
+  return real !== null && real === (await fs.realPath(userDir))
+}
+
 /** Projects Claude Code has been used in that still exist. */
 export async function knownProjects(fs: FileSystem, paths: ClaudePaths): Promise<string[]> {
   return readProjects(fs, await readJson(fs, paths.userConfigFile, []))
@@ -135,7 +145,7 @@ export async function knownProjects(fs: FileSystem, paths: ClaudePaths): Promise
 async function readProjects(fs: FileSystem, userConfig: Json): Promise<string[]> {
   const projects: string[] = []
   for (const path of Object.keys(isObject(userConfig.projects) ? userConfig.projects : {})) {
-    if (path.startsWith('/') && (await fs.listEntries(path)).length > 0) projects.push(path)
+    if (path.startsWith('/') && (await fs.realPath(path)) !== null) projects.push(path)
   }
   return projects.sort()
 }
