@@ -423,3 +423,27 @@ test('refresh marketplaces runs claude plugin marketplace update', async () => {
   assert.deepEqual(deps.cli.calls, ['plugin marketplace update'])
   assert.match(result.message, /marketplaces/i)
 })
+
+test('npm MCP update: a padded registry version is pinned trimmed', async () => {
+  const deps = { ...setup(), http: fakeHttp({ [NPM('team-mcp')]: okJson({ version: ' 3.1.0\n' }) }) }
+  const v = await view(deps)
+  okResult(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'team', SHOP) }))
+  assert.match(deps.cli.calls[1], /"team-mcp@3\.1\.0"/)
+})
+
+test('npm MCP update: a registry version that is not semver is refused, not called up to date', async () => {
+  const deps = { ...setup(), http: fakeHttp({ [NPM('team-mcp')]: okJson({ version: 'not-a-version' }) }) }
+  const v = await view(deps)
+  const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'team', SHOP) }))
+  assert.equal(result.reason, 'check-failed')
+  assert.match(result.message, /cannot be compared/)
+  assert.deepEqual(deps.cli.calls, [])
+})
+
+test('plugin update: an acceptCommand that is not a sha256 is refused before running anything', async () => {
+  const deps = setup()
+  const v = await view(deps)
+  const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'plugins', 'a'), acceptCommand: '--yes' }))
+  assert.equal(result.reason, 'refused')
+  assert.deepEqual(deps.cli.calls, [])
+})

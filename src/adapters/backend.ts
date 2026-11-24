@@ -331,6 +331,10 @@ async function update(
   if (target.type === 'manual') return refuse('unsupported', `This app does not update ${named}. ${target.source.note ?? ''}`.trim())
 
   if (target.type === 'plugin') {
+    // The sha comes back from the panel: accept only what a sha can look like, never an option.
+    if (acceptCommand !== undefined && !/^[0-9a-f]+$/i.test(acceptCommand)) {
+      return refuse('refused', `The approval for ${named} is not a valid command hash, so nothing ran.`)
+    }
     const result = await updatePlugin(fs, cli, paths, target.id, acceptCommand)
     if (!result.ok && result.reason === 'needs-confirmation') {
       return {
@@ -377,7 +381,10 @@ async function update(
   const latest = await latestNpmVersion(deps.http, target.pkg)
   if (!latest.ok) return refuse('check-failed', `Could not get the latest version of ${target.pkg} from npm: ${latest.error}`)
   const order = compareVersions(latest.version, target.version)
-  if (order === null || order <= 0) {
+  if (order === null) {
+    return refuse('check-failed', `npm says the latest ${target.pkg} is "${latest.version}", which cannot be compared with ${target.version}; nothing changed.`)
+  }
+  if (order <= 0) {
     return done(`${cap(named)} is already at the latest version (${target.version}).`, undefined, false)
   }
   const server = ref.server

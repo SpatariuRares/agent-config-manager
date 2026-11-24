@@ -215,6 +215,6 @@ export function compareVersions(a: string, b: string): number | null {
 export async function latestNpmVersion(http: Http, pkg: string): Promise<{ ok: true; version: string } | { ok: false; error: string }> {
   const answer = await http.getJson(`https://registry.npmjs.org/${pkg}/latest`)
   if (!answer.ok) return { ok: false, error: answer.error }
-  const version = isObject(answer.json) ? text(answer.json.version) : null
+  const version = isObject(answer.json) ? (text(answer.json.version)?.trim() || null) : null
   return version === null ? { ok: false, error: 'the registry answer has no version' } : { ok: true, version }
 }
