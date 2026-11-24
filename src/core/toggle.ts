@@ -8,7 +8,7 @@ export type WriteResult =
   | { ok: true; backup: string | null }
   | {
       ok: false
-      reason: 'changed' | 'unknown-plugin' | 'unknown-project' | 'unreadable' | 'unknown-backup'
+      reason: 'changed' | 'unknown-plugin' | 'unknown-project' | 'unreadable' | 'unknown-backup' | 'refused' | 'claude-owned'
       message: string
     }
 
@@ -41,7 +41,7 @@ type Json = Record<string, any>
 
 const CHANGED = { ok: false, reason: 'changed', message: 'The settings file changed since it was read. Refresh and try again.' } as const
 
-const backupDir = (paths: ClaudePaths) => `${paths.claudeDir}/backups/claude-config-manager`
+export const backupDir = (paths: ClaudePaths) => `${paths.claudeDir}/backups/claude-config-manager`
 /** `<slug>.<ISO stamp with - for : and .>[-n].json`; slug is `settings` for the user file, else the encoded path. */
 const BACKUP_NAME = /^(settings|%2F[A-Za-z0-9%._~!*'()-]+)\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?)\.json$/
 
@@ -120,8 +120,15 @@ export async function restoreBackup(
   const text =
     target !== null && (await listBackups(fs, paths)).includes(name) ? await fs.readText(`${backupDir(paths)}/${name}`) : null
   if (target === null || text === null) return { ok: false, reason: 'unknown-backup', message: `${name} is not a known backup.` }
+  if (target === paths.userConfigFile) {
+    return {
+      ok: false,
+      reason: 'claude-owned',
+      message: `Claude Code rewrites ${target} all the time, so it is never written here. To go back, quit Claude Code and copy ${backupDir(paths)}/${name} over it by hand.`
+    }
+  }
   if (target !== settingsFile(paths)) {
-    const project = /^(.+)\/\.claude\/settings(?:\.local)?\.json$/.exec(target)?.[1] ?? ''
+    const project = /^(.+)\/(?:\.claude\/settings(?:\.local)?\.json|\.mcp\.json)$/.exec(target)?.[1] ?? ''
     const refused = await projectFileRefusal(fs, paths, project, target)
     if (refused !== null) return refused
   }
@@ -130,6 +137,44 @@ export async function restoreBackup(
   const backup = await backUp(fs, paths, target, current ?? '{}\n', clock)
   await fs.writeText(target, text)
   return { ok: true, backup }
+}
+
+export interface JsonFileEdit {
+  /** The project the file belongs to; null for the user settings file. */
+  project: string | null
+  file: string
+  /** The inventory's version of the file ('' = it was missing). */
+  version: string
+  /** Changes the parsed file in place; returns a refusal message to write nothing. */
+  edit: (json: Json) => string | void
+}
+
+/**
+ * The general versioned write: refuses unknown projects and the user settings file through a project path,
+ * refuses a file that changed since it was read, backs it up, then writes 2-space JSON with a trailing newline.
+ * A missing file is created.
+ */
+export async function updateJsonFile(
+  fs: FileSystem,
+  paths: ClaudePaths,
+  change: JsonFileEdit,
+  clock: Clock = () => new Date()
+): Promise<WriteResult> {
+  const { file } = change
+  if (change.project === null && file !== settingsFile(paths)) {
+    return { ok: false, reason: 'unknown-project', message: `${file} is not the user settings file.` }
+  }
+  if (change.project !== null) {
+    const refused = await projectFileRefusal(fs, paths, change.project, file)
+    if (refused !== null) return refused
+  }
+  const text = await fs.readText(file)
+  if (versionOf(text) !== change.version) return CHANGED
+  const json = text === null ? {} : parse(text)
+  if (json === null) return unreadable(file)
+  const refusal = change.edit(json)
+  if (typeof refusal === 'string') return { ok: false, reason: 'refused', message: refusal }
+  return replace(fs, paths, file, text ?? '{}\n', json, clock)
 }
 
 async function replace(fs: FileSystem, paths: ClaudePaths, file: string, previous: string, next: Json, clock: Clock) {
@@ -167,7 +212,7 @@ async function projectFileRefusal(fs: FileSystem, paths: ClaudePaths, project: s
 }
 
 /** A plugin this setup knows: in the user settings, installed, or already in the file being changed. */
-async function isKnownPlugin(fs: FileSystem, paths: ClaudePaths, id: string, file: Json): Promise<boolean> {
+export async function isKnownPlugin(fs: FileSystem, paths: ClaudePaths, id: string, file: Json): Promise<boolean> {
   const user = parse((await fs.readText(settingsFile(paths))) ?? '{}') ?? {}
   const installed = parse((await fs.readText(`${paths.claudeDir}/plugins/installed_plugins.json`)) ?? '{}') ?? {}
   return [user.enabledPlugins, installed.plugins, file.enabledPlugins].some((map) => isPlainObject(map) && Object.hasOwn(map, id))

@@ -1,6 +1,6 @@
 // FileSystem port over node:fs, shared by the Orca worker and the future localhost server.
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ClaudePaths, FileSystem } from '../core/ports.ts'
@@ -9,6 +9,18 @@ const isMissing = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException).code
   return code === 'ENOENT' || code === 'ENOTDIR'
 }
+
+/** Whether anything, a broken symlink included, is at `path`. */
+const occupied = (path: string) => lstat(path).then(() => true, (error) => (isMissing(error) ? false : Promise.reject(error)))
+
+async function refuseExisting(dst: string) {
+  if (await occupied(dst)) throw Object.assign(new Error(`${dst} already exists`), { code: 'EEXIST' })
+  await mkdir(dirname(dst), { recursive: true })
+}
+
+// Links are copied as links with their text unchanged, never followed.
+const copyTree = (src: string, dst: string) =>
+  cp(src, dst, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false, preserveTimestamps: true })
 
 export const nodeFileSystem: FileSystem = {
   async readText(path) {
@@ -34,6 +46,30 @@ export const nodeFileSystem: FileSystem = {
       if (isMissing(error)) return null
       throw error
     }
+  },
+  async linkTarget(path) {
+    try {
+      return await readlink(path)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (isMissing(error) || code === 'EINVAL') return null
+      throw error
+    }
+  },
+  async move(src, dst) {
+    await refuseExisting(dst)
+    try {
+      await rename(src, dst)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+      // Another volume: copy, then remove the original (a link is removed, never its target).
+      await copyTree(src, dst)
+      await rm(src, { recursive: true, force: true })
+    }
+  },
+  async copy(src, dst) {
+    await refuseExisting(dst)
+    await copyTree(src, dst)
   },
   async writeText(path, text) {
     // Write through a symlink (dotfiles setups) instead of replacing the link with a plain file.

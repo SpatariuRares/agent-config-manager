@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude Config</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <div class="top">
+        <header class="bar">
+          <h1>Claude Config</h1>
+          <button type="button" id="refresh" class="icon-btn" data-act="refresh" data-fid="refresh" aria-label="Refresh" title="Refresh (read the files again)">
+            <svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg>
+          </button>
+          <button type="button" id="snapshot" class="btn btn-secondary btn-sm" data-act="snapshot" data-fid="snapshot" title="Back up every settings file at once">
+            <svg class="icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="1"/><path d="M3 6v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6"/><path d="M6.5 9h3"/></svg>
+            Create backup
+          </button>
+        </header>
+        <div id="updates" class="updates"></div>
+        <div id="problems" hidden></div>
+        <div id="tabs" class="tabs" role="tablist" aria-label="Classes"></div>
+        <div class="filter">
+          <svg class="icon filter-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+          <input id="filter" type="text" inputmode="search" autocomplete="off" spellcheck="false" aria-label="Filter by name" placeholder="Filter by name" />
+          <button type="button" id="filter-clear" class="icon-btn filter-clear" data-act="clear-filter" aria-label="Clear filter" hidden>
+            <svg class="icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <main id="tabpanel" class="tabpanel" role="tabpanel" tabindex="-1"></main>
+
+      <section id="backups" class="backups" aria-label="Backups"></section>
+
+      <footer class="foot">Changes apply to new Claude Code sessions, or after <code>/reload-plugins</code>.</footer>
+
+      <div id="notice" class="notice-area" role="status" aria-live="polite"></div>
+    </div>
+
+    <div id="dropstrip" class="strip" hidden aria-hidden="true"></div>
+    <div id="layer"></div>
+  </body>
+</html>

@@ -8,10 +8,13 @@
     "node": ">=23.6"
   },
   "scripts": {
+    "start": "node src/adapters/http/main.ts",
     "test": "node --test 'src/**/*.test.ts'",
-    "typecheck": "orca plugin types . >/dev/null && tsc -p ."
+    "typecheck": "orca plugin types . >/dev/null && tsc -p .",
+    "test:panel": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.1",
     "@types/node": "^22.10.2",
     "typescript": "^5.6.3"
   }

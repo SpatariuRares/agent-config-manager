@@ -77,7 +77,7 @@ export interface Inventory {
   versions: Record<string, string>
 }
 
-type Json = Record<string, any>
+export type Json = Record<string, any>
 
 export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise<Inventory> {
   const problems: string[] = []
@@ -132,6 +132,9 @@ export async function isUserSettingsFile(fs: FileSystem, paths: ClaudePaths, fil
   const split = (path: string) => [path.slice(0, path.lastIndexOf('/')), path.slice(path.lastIndexOf('/') + 1)]
   const [dir, name] = split(file)
   const [userDir, userName] = split(settingsFile(paths))
+  // The file itself may be a link to the user settings (whatever its name), or sit in a folder that is one.
+  const realFile = await fs.realPath(file)
+  if (realFile !== null && realFile === (await fs.realPath(settingsFile(paths)))) return true
   if (name !== userName) return false
   const real = await fs.realPath(dir)
   return real !== null && real === (await fs.realPath(userDir))
@@ -264,7 +267,7 @@ async function markdownFiles(fs: FileSystem, paths: string[]): Promise<{ name: s
   return files
 }
 
-function isObject(value: unknown): value is Json {
+export function isObject(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -272,7 +275,8 @@ function unique(values: string[]): string[] {
   return [...new Set(values)].sort()
 }
 
-async function readSkills(fs: FileSystem, dir: string): Promise<Skill[]> {
+/** Skills in a folder of skill folders, each holding SKILL.md. */
+export async function readSkills(fs: FileSystem, dir: string): Promise<Skill[]> {
   const skills: Skill[] = []
   for (const entry of await fs.listEntries(dir)) {
     const path = `${dir}/${entry}/SKILL.md`
@@ -282,7 +286,8 @@ async function readSkills(fs: FileSystem, dir: string): Promise<Skill[]> {
   return sortByName(skills)
 }
 
-async function readAgents(fs: FileSystem, dir: string): Promise<Agent[]> {
+/** Agents in a folder of .md files. */
+export async function readAgents(fs: FileSystem, dir: string): Promise<Agent[]> {
   const agents: Agent[] = []
   for (const entry of await fs.listEntries(dir)) {
     if (!entry.endsWith('.md')) continue
@@ -294,27 +299,59 @@ async function readAgents(fs: FileSystem, dir: string): Promise<Agent[]> {
 }
 
 function readMcpServers(userConfig: Json): McpServer[] {
+  return mcpServersOf(userConfig.mcpServers).map(({ name, transport, target }) => ({ name, transport, target }))
+}
+
+/** The servers of one `mcpServers` map, sorted by name, each with its config as written. */
+export function mcpServersOf(map: unknown): (McpServer & { config: Json })[] {
   return sortByName(
-    Object.entries(isObject(userConfig.mcpServers) ? userConfig.mcpServers : {})
+    Object.entries(isObject(map) ? map : {})
       .filter((entry): entry is [string, Json] => isObject(entry[1]))
       .map(([name, server]) => ({
         name,
         transport: server.type ?? (server.url ? 'http' : 'stdio'),
-        target: server.url ?? [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(' ')
+        target: server.url ?? [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(' '),
+        config: server
       }))
   )
 }
 
 function readHooks(settings: Json): Hook[] {
-  const hooks: Hook[] = []
-  for (const [event, groups] of Object.entries(settings.hooks ?? {})) {
-    for (const group of (groups as Json[]) ?? []) {
-      for (const hook of group.hooks ?? []) {
-        hooks.push({ event, matcher: group.matcher || '*', command: hook.command ?? hook.type ?? '' })
-      }
-    }
+  return hookEntries(settings)
+    .map(({ event, matcher, command }) => ({ event, matcher, command }))
+    .sort((a, b) => a.event.localeCompare(b.event))
+}
+
+/** One hook command in a settings file, with what it takes to find it again. */
+export interface HookEntry extends Hook {
+  /** The matcher as written ('' when absent); `matcher` shows it, with '*' for none. */
+  rawMatcher: string
+  /** Which of the hooks with the same event, raw matcher and command this is, in file order. */
+  n: number
+  /** Position in the file: `hooks[event][group].hooks[index]`. */
+  group: number
+  index: number
+  /** The hook object as written. */
+  hook: Json
+}
+
+/** Every hook in a settings object, in file order. Malformed parts are skipped. */
+export function hookEntries(settings: Json): HookEntry[] {
+  const entries: HookEntry[] = []
+  for (const [event, groups] of Object.entries(isObject(settings.hooks) ? settings.hooks : {})) {
+    if (!Array.isArray(groups)) continue
+    groups.forEach((group: unknown, groupIndex) => {
+      if (!isObject(group) || !Array.isArray(group.hooks)) return
+      const rawMatcher = typeof group.matcher === 'string' ? group.matcher : ''
+      group.hooks.forEach((hook: unknown, index) => {
+        if (!isObject(hook)) return
+        const command = String(hook.command ?? hook.type ?? '')
+        const n = entries.filter((e) => e.event === event && e.rawMatcher === rawMatcher && e.command === command).length
+        entries.push({ event, matcher: rawMatcher || '*', rawMatcher, command, n, group: groupIndex, index, hook })
+      })
+    })
   }
-  return hooks.sort((a, b) => a.event.localeCompare(b.event))
+  return entries
 }
 
 /** Name and description from the YAML frontmatter, falling back to the file name. */
