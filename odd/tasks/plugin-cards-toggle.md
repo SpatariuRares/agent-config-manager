@@ -39,3 +39,17 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 - L10 S5 revised: `installed_plugins.json` is not backed up for restore, because the CLI deletes the plugin's cached files; restoring the record would point Claude Code at a missing folder. Settings files are still backed up.
 - L11 T4: the home folder is listed as a project and its `.claude/settings.json` IS the user settings file; it is skipped as a project file (test added).
 - L12 T7: panel adds a "Switches act on" context (global or a project) and "Save project changes for" (only me = settings.local.json, team = settings.json); cards show project overrides with Clear, and an Uninstall with an inline confirm. Typecheck added (tsc, 0 errors); it found a crash on a null MCP entry in ~/.claude.json, fixed with a test (420fbbb). 50 tests green. Not verified live: a real uninstall (destructive, needs the user's go) and the project-context view (Orca refuses simulated clicks while its window is visible).
+- L13 Independent verifier on T4–T7 (78d596d..846faad): S5 met. S6 and S1 for project writes not met, because of 2 blockers:
+  1. A project key aliasing home (trailing slash, `..`, symlink) wrote the user settings through the project path.
+  2. restoreBackup recreated the folder of a project no longer listed.
+  Both are fixed in 06551e8: real-path comparison via the new `FileSystem.realPath` port method, and restores limited to known projects. The test fake now normalizes paths like a real disk, and there is a real-disk symlink test.
+  Minor issues fixed in the same commit:
+  - a non-object enabledPlugins is refused;
+  - installed plugins count as known;
+  - projects holding only dot folders are listed;
+  - a project install record without a folder is reported instead of run in home;
+  - the panel warns when a team change is hidden by a local override (show() is now awaited, so the warning is not overwritten).
+  Known limits left as-is:
+  - backup names longer than 255 bytes (very long project paths) fail to write, and the change is refused;
+  - more than 9 same-millisecond backups sort out of order.
+  57 tests, tsc 0, plugin check clean.
