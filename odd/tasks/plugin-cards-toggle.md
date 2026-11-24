@@ -20,10 +20,10 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 | T1 | S2 | inline | done (13 tests green; real data checked) | 4b3784e |
 | T2 | S1 | inline · Risk: item 1 (rewrites user settings), item 4 (concurrent writers) | done (24 tests green) | 59de991 |
 | T3 | S1, S3, S4 | inline | done (plugin check clean; real round trip verified) | ad16a22 |
-| T4 | S6 | inline | todo | |
-| T5 | S1, S6 | inline · Risk: item 1 (rewrites project settings), item 4 | todo | |
-| T6 | S5 | inline · Risk: item 1 (removes installed plugin files) | todo | |
-| T7 | S5, S6 | inline | todo | |
+| T4 | S6 | inline | done | 621be7f, home fix in a following commit |
+| T5 | S1, S6 | inline · Risk: item 1 (rewrites project settings), item 4 | done | 59f15d6 |
+| T6 | S5 | inline · Risk: item 1 (removes installed plugin files) | done (fake CLI only; no real uninstall run) | 76f9712 |
+| T7 | S5, S6 | inline | done (plugin check clean, tsc clean, screenshot global view) | a6da9e5, d80bc7f |
 
 ## Log
 
@@ -38,3 +38,4 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 - L9 Recheck of the two verifier blockers on 78d596d: both fixed (stale restore refused byte-identical; mode 600 kept on settings and backup); 30/30 tests.
 - L10 S5 revised: `installed_plugins.json` is not backed up for restore, because the CLI deletes the plugin's cached files; restoring the record would point Claude Code at a missing folder. Settings files are still backed up.
 - L11 T4: the home folder is listed as a project and its `.claude/settings.json` IS the user settings file; it is skipped as a project file (test added).
+- L12 T7: panel adds a "Switches act on" context (global or a project) and "Save project changes for" (only me = settings.local.json, team = settings.json); cards show project overrides with Clear, and an Uninstall with an inline confirm. Typecheck added (tsc, 0 errors); it found a crash on a null MCP entry in ~/.claude.json, fixed with a test (420fbbb). 50 tests green. Not verified live: a real uninstall (destructive, needs the user's go) and the project-context view (Orca refuses simulated clicks while its window is visible).
