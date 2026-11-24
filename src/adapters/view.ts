@@ -3,12 +3,36 @@
 
 export type Kind = 'plugins' | 'skills' | 'agents' | 'mcp' | 'hooks'
 
+/** A coding agent whose setup this app manages, e.g. 'claude', 'codex', 'gemini', 'copilot'. */
+export type AgentId = string
+
+export type ActionType = Action['type']
+
+/** One agent, as the panel's agent switcher shows it. Each agent is a provider in src/providers. */
+export interface AgentInfo {
+  id: AgentId
+  /** Display name, e.g. "Claude Code". */
+  name: string
+  /** True when the agent is installed on this machine (its binary or config folder exists). */
+  detected: boolean
+  /** The classes this agent has; the panel shows only these tabs. */
+  kinds: Kind[]
+  /** Per class, the actions this agent can do; anything missing is read-only in the panel. */
+  supports: Partial<Record<Kind, ActionType[]>>
+  /** Where the agent keeps its setup, shown to the user (e.g. "~/.codex/config.toml"). */
+  configHome: string
+  /** Why something is read-only or missing, shown once per agent. */
+  note?: string
+}
+
 /** Which file or folder an item lives in. user = global; project = shared with the team; local = only me. */
 export type Scope = 'user' | 'project' | 'local'
 
 export interface Item {
   /** Unique and stable across reads, e.g. `skills:/abs/path/SKILL.md`. Actions name items by key. */
   key: string
+  /** The agent this item belongs to. */
+  agent: AgentId
   kind: Kind
   name: string
   description: string
@@ -76,6 +100,10 @@ export interface BackupEntry {
 }
 
 export interface View {
+  /** Every agent this app knows, detected or not; the switcher lists them. */
+  agents: AgentInfo[]
+  /** The agent this view shows. */
+  agent: AgentId
   items: Item[]
   /** Projects Claude Code knows that still exist, sorted; every one is a drop target. */
   projects: string[]
@@ -127,6 +155,13 @@ export interface ActionAnswer {
 
 /** What the panel sends: the action plus the versions of the view it acted on. */
 export interface ActionRequest {
+  /** The agent the action applies to; the view's `agent`. */
+  agent: AgentId
   action: Action
   versions: Record<string, string>
+}
+
+/** Input of 'view.get' and 'updates.check'; without `agent`, the first detected agent. */
+export interface AgentRequest {
+  agent?: AgentId
 }
