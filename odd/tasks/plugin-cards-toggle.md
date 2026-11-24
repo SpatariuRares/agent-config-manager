@@ -14,7 +14,7 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S2 | inline | done (13 tests green; real data checked) | pending |
+| T1 | S2 | inline | done (13 tests green; real data checked) | 4b3784e |
 | T2 | S1 | inline · Risk: item 1 (rewrites user settings), item 4 (concurrent writers) | todo | |
 | T3 | S1, S3, S4 | inline | todo | |
 
