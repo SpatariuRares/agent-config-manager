@@ -34,6 +34,37 @@ export interface Item {
   }
   mcp?: { transport: string; target: string }
   hook?: { event: string; matcher: string; command: string }
+  /** Where updates come from; known without the network. Absent when nothing can update it. */
+  updateSource?: UpdateSource
+}
+
+/**
+ * plugin: its marketplace (`claude plugin update`). skills-cli: a skill installed by the `skills` CLI
+ * (`npx skills update`). npm: an MCP server launched from a version-pinned npm package.
+ * manual: updated outside this app (e.g. Homebrew); `note` says how. Local files have no source.
+ */
+export interface UpdateSource {
+  type: 'plugin' | 'skills-cli' | 'npm' | 'manual'
+  /** Human label, e.g. "claude-plugins-official", "mattpocock/skills", "@upstash/context7-mcp". */
+  label: string
+  /** The installed version, commit or content hash, when known. */
+  current: string | null
+  note?: string
+}
+
+/** Result of an on-demand check (network); keyed by Item.key. */
+export interface UpdateStatus {
+  status: 'available' | 'current' | 'unknown'
+  latest: string | null
+  /** Why the status is unknown, or what the update changes. */
+  note?: string
+}
+
+export interface UpdatesAnswer {
+  checkedAt: number
+  statuses: Record<string, UpdateStatus>
+  /** Sources that could not be checked (offline, rate limit), with the reason. */
+  errors: string[]
 }
 
 export interface BackupEntry {
@@ -71,10 +102,22 @@ export type Action =
   | { type: 'uninstall'; key: string }
   | { type: 'restore'; name: string }
   | { type: 'snapshot' }
+  /** Updates one item from its UpdateSource. `acceptCommand` is the sha256 the user confirmed (plugins). */
+  | { type: 'update'; key: string; acceptCommand?: string }
+  /** Updates every item of a kind that the last check marked available. */
+  | { type: 'updateAll'; kind: Kind; keys: string[] }
+  /** Refreshes plugin marketplaces (`claude plugin marketplace update`). */
+  | { type: 'refreshMarketplaces' }
 
 export type ActionResult =
   | { ok: true; message: string; undo?: Action; warning?: string }
-  | { ok: false; reason: string; message: string }
+  | {
+      ok: false
+      reason: string
+      message: string
+      /** Set when the update needs the user to approve a command first: show `command`, then send `action`. */
+      confirm?: { command: string; action: Action }
+    }
 
 export interface ActionAnswer {
   result: ActionResult
