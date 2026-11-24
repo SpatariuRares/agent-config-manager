@@ -30,6 +30,7 @@ const TYPES: Record<string, string> = {
 }
 
 export function createConfigServer({ deps, panelDir, token }: ConfigServerOptions): Server {
+  if (token.length < 16) throw new Error('The server needs a random token of at least 16 characters.')
   // Changes run one at a time: each reads files, checks their versions, then writes.
   const serialized = actionQueue()
   const handlers: Record<string, (input: unknown) => Promise<unknown>> = {
@@ -42,25 +43,32 @@ export function createConfigServer({ deps, panelDir, token }: ConfigServerOption
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost')
+      // Only this server's own names: a rebound DNS name cannot read the page or the API.
+      if (!hosts().includes(request.headers.host ?? '')) return send(response, 403, 'Wrong host')
       if (url.pathname.startsWith('/api/')) return await api(request, response, url.pathname.slice(5))
       if (request.method !== 'GET' && request.method !== 'HEAD') return send(response, 405, 'Method not allowed')
       return await serveFile(response, url.pathname)
     } catch (error) {
-      send(response, 500, String(error))
+      // The terminal gets the details; the response never carries paths.
+      console.error(error)
+      send(response, 500, 'Internal error')
     }
   })
 
-  async function api(request: IncomingMessage, response: ServerResponse, name: string) {
+  function hosts(): string[] {
     const port = (server.address() as { port: number } | null)?.port
-    const hosts = [`127.0.0.1:${port}`, `localhost:${port}`]
-    if (!hosts.includes(request.headers.host ?? '')) return send(response, 403, 'Wrong host')
+    return [`127.0.0.1:${port}`, `localhost:${port}`]
+  }
+
+  async function api(request: IncomingMessage, response: ServerResponse, name: string) {
     const origin = request.headers.origin
-    if (origin !== undefined && !hosts.some((h) => origin === `http://${h}`)) return send(response, 403, 'Wrong origin')
+    if (origin !== undefined && !hosts().some((h) => origin === `http://${h}`)) return send(response, 403, 'Wrong origin')
     if (!sameSecret(String(request.headers['x-ccm-token'] ?? ''), token)) return send(response, 403, 'Missing or wrong token')
     const handler = Object.hasOwn(handlers, name) ? handlers[name] : undefined
     if (handler === undefined) return send(response, 404, 'Unknown request')
     if (request.method !== 'POST') return send(response, 405, 'Use POST')
-    if (!String(request.headers['content-type'] ?? '').startsWith('application/json')) return send(response, 415, 'Send JSON')
+    const mediaType = String(request.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+    if (mediaType !== 'application/json') return send(response, 415, 'Send JSON')
 
     const body = await readBody(request)
     if (body === null) return send(response, 413, 'Body too large')
@@ -93,7 +101,10 @@ export function createConfigServer({ deps, panelDir, token }: ConfigServerOption
       'content-type': TYPES[extname(real)] ?? 'application/octet-stream',
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
-      'referrer-policy': 'no-referrer'
+      'referrer-policy': 'no-referrer',
+      // Never inside another site's frame.
+      'x-frame-options': 'DENY',
+      'content-security-policy': "frame-ancestors 'none'"
     })
     response.end(content)
   }

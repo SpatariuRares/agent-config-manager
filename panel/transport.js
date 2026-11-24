@@ -51,6 +51,20 @@ function sessionToken(hash) {
   }
 }
 
+/** Opened without the server's link (and not as ?fixture): say how to open it, never show sample data. */
+function noServerBackend() {
+  return {
+    mode: 'none',
+    request: () =>
+      Promise.reject(
+        Object.assign(new Error('Open the panel from the link the server printed (run `npm start`); this page has no access token.'), {
+          code: 'no_token',
+        })
+      ),
+    onTheme: () => undefined,
+  }
+}
+
 function fixtureBackend(params) {
   const latency = Number(params.get('latency') ?? 150)
   const backend = createFixtureBackend({ variant: params.get('fixture') || 'default', latency: Number.isFinite(latency) ? latency : 150 })
@@ -81,7 +95,7 @@ export function createTransport({ search = location.search, hash = location.hash
       ? orcaBackend(orca)
       : token
         ? httpBackend(location.origin + '/', token)
-        : fixtureBackend(params)
+        : noServerBackend()
   /** Versions of the last view read; every action sends them so stale writes are refused. */
   let versions = {}
   const remember = (viewAnswer) => {

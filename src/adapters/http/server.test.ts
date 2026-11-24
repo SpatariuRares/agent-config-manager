@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test'
 import { fakeCli, fakeFs, paths } from '../../core/test-support.ts'
 import { createConfigServer } from './server.ts'
 
-const TOKEN = 'test-token-123'
+const TOKEN = 'test-token-0123456789'
 let panelDir: string
 let base: string
 let host: string
@@ -122,4 +122,28 @@ test('runs an action and answers with its result and the fresh view', async () =
   const body = await answer.json()
   assert.equal(body.result.ok, true)
   assert.equal(JSON.parse(fs.files['/home/.claude/settings.json']).enabledPlugins['a@m'], false)
+})
+
+test('refuses to start without a token', () => {
+  assert.throws(() => createConfigServer({ deps: { fs, cli: fakeCli(), paths, http: { getJson: async () => ({ ok: false as const, status: null, error: '', rateLimited: false }) } }, panelDir, token: '' }), /token/)
+})
+
+test('accepts application/json exactly, with or without parameters, in any case', async () => {
+  assert.equal((await api('view.get', { type: 'application/jsonx' })).status, 415)
+  assert.equal((await api('view.get', { type: 'Application/JSON; charset=utf-8' })).status, 200)
+})
+
+test('serves the panel only under this server as Host, and never in a frame', async () => {
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = httpRequest(`${base}/`, { headers: { host: 'evil.example' } }, (res) => {
+      res.resume()
+      resolve(res.statusCode ?? 0)
+    })
+    req.on('error', reject)
+    req.end()
+  })
+  assert.equal(status, 403)
+  const page = await fetch(`${base}/`)
+  assert.equal(page.headers.get('x-frame-options'), 'DENY')
+  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
 })

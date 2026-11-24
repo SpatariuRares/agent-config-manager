@@ -292,3 +292,10 @@ test('no horizontal page scroll at 320px', async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 700 })
   expect(await overflow()).toBeLessThanOrEqual(0)
 })
+
+test('outside Orca, without the server link and without ?fixture, the panel says how to open it instead of showing sample data', async ({ page }) => {
+  await page.goto('index.html')
+  await expect(page.getByText(/link the server printed/i)).toBeVisible()
+  // No sample data from the fixture backend.
+  await expect(page.getByText('code-review')).toHaveCount(0)
+})
