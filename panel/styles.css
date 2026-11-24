@@ -257,6 +257,23 @@ code {
   background: var(--hover);
   color: var(--fg);
 }
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--primary) 88%, var(--bg));
+}
+/* Update actions: quiet, tinted from the focus hue so they read as "something new" without shouting. */
+.btn-update {
+  background: color-mix(in oklab, var(--ring) 10%, transparent);
+  border-color: color-mix(in oklab, var(--ring) 38%, var(--border));
+  color: color-mix(in oklab, var(--ring) 60%, var(--fg));
+}
+.btn-update:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ring) 18%, transparent);
+  border-color: color-mix(in oklab, var(--ring) 60%, var(--border));
+}
 .btn-danger {
   background: var(--danger);
   color: var(--danger-fg);
@@ -311,6 +328,93 @@ code {
 .link-btn:hover {
   color: var(--fg);
   text-decoration-color: currentColor;
+}
+
+/* ---------- Updates (header) ---------- */
+
+.updates {
+  padding: 0 12px 8px;
+}
+.updates-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.updates-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.updates-status > span:last-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.updates-errors {
+  margin-top: 6px;
+  font-size: var(--fs-xs);
+}
+.updates-errors summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--warn-fg);
+  cursor: pointer;
+  list-style: none;
+}
+.updates-errors summary::-webkit-details-marker {
+  display: none;
+}
+.updates-errors summary .icon-chevron {
+  transition: rotate var(--t-med) var(--ease-out);
+}
+.updates-errors[open] summary .icon-chevron {
+  rotate: 90deg;
+}
+.updates-errors ul {
+  margin: 4px 0 0;
+  padding: 0 0 0 17px;
+  list-style: none;
+}
+.updates-error {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.updates-error + .updates-error {
+  margin-top: 3px;
+}
+
+.spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in oklab, var(--muted-fg) 35%, transparent);
+  border-top-color: var(--ring);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    rotate: 1turn;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ---------- Problems ---------- */
@@ -400,6 +504,56 @@ code {
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--muted-fg);
+}
+.tab-updates {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  align-self: center;
+  margin-left: -1px;
+  padding: 0 4px 0 2px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ring) 16%, transparent);
+  color: color-mix(in oklab, var(--ring) 60%, var(--fg));
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+/* A narrow sidebar has room for one number per tab: after a check, the update count takes the
+   total's place (the total stays in each accordion's count and in the pill's tooltip). */
+@media (max-width: 440px) {
+  .tab:has(.tab-updates) .tab-count {
+    display: none;
+  }
+  .tab:has(.tab-updates) {
+    padding-inline: 6px;
+  }
+  .tab:has(.tab-updates)::after {
+    left: 6px;
+    right: 6px;
+  }
+  .tab-updates {
+    margin-left: 0;
+    padding: 0 4px;
+  }
+  .tab-updates .icon {
+    display: none;
+  }
+}
+
+/* Per-tab update actions, above the accordions */
+.tab-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+.tab-tools > .btn-update {
+  margin-left: auto;
 }
 
 /* ---------- Filter ---------- */
@@ -739,6 +893,107 @@ code {
   margin-top: -3px;
 }
 
+/* Update source and status: one quiet line under the item */
+.src-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+  margin-top: 1px;
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+}
+.src {
+  display: flex;
+  gap: 6px;
+  /* Content-sized, so a status that does not fit wraps to its own line instead of eliding the label. */
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+.src > span {
+  flex: none;
+}
+.src > .src-label,
+.src > .src-note {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.src-label::before,
+.src-note::before {
+  content: '·';
+  margin-right: 6px;
+}
+.src-note {
+  font-family: var(--mono);
+}
+.src-note::before {
+  font-family: var(--font);
+}
+.ver.is-inline {
+  margin-left: -2px;
+}
+.ver.is-inline::before {
+  content: none;
+}
+
+.upd,
+.upd-btn {
+  margin-left: auto;
+}
+.title.has-status {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.title.has-status > .name {
+  flex: 0 1 auto;
+}
+.title .upd {
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+.title .upd.is-available {
+  color: color-mix(in oklab, var(--ring) 60%, var(--fg));
+}
+.title .upd-btn {
+  height: 20px;
+  margin-block: -1px;
+}
+.upd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  white-space: nowrap;
+}
+.upd.is-current {
+  color: color-mix(in oklab, var(--muted-fg) 85%, transparent);
+}
+.upd.is-unknown {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in oklab, var(--muted-fg) 50%, transparent);
+  text-underline-offset: 2px;
+}
+.upd.is-available {
+  color: color-mix(in oklab, var(--ring) 60%, var(--fg));
+}
+.upd.is-checking {
+  width: 14px;
+  justify-content: center;
+}
+.upd-btn {
+  flex: none;
+}
+.upd-ver {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
 /* Switch */
 .switch {
   position: relative;
@@ -812,6 +1067,42 @@ code {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+}
+/* Approval of a marketplace command: caution, not destruction, so the frame is neutral. */
+.confirm-update {
+  border-color: color-mix(in oklab, var(--ring) 40%, var(--border));
+  background: color-mix(in oklab, var(--ring) 5%, var(--bg));
+}
+.cmd-label {
+  margin: 0 0 4px;
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+}
+.confirm .cmd-label {
+  margin-bottom: 4px;
+}
+.cmd {
+  max-height: calc(1.5em * 6 + 12px + 2px);
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--muted);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.notice-confirm {
+  display: block;
+  padding: 0;
+}
+.notice-confirm .confirm {
+  margin: 0;
+  border: 0;
 }
 
 /* Action in progress on an item */
@@ -1066,6 +1357,7 @@ code {
   margin: 0;
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 .notice-warning {
   display: flex;
@@ -1336,6 +1628,11 @@ code {
   }
   .item.is-working::before {
     background: var(--ring);
+    opacity: 0.6;
+  }
+  .spinner {
+    animation: none;
+    border-color: var(--ring);
     opacity: 0.6;
   }
 }

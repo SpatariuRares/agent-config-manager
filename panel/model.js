@@ -110,3 +110,37 @@ export function relativeTime(at, now = Date.now()) {
 export function sameProject(a, b) {
   return (a ?? null) === (b ?? null)
 }
+
+// ---------- Updates ----------
+
+/** Content hashes and commits shorten to 7 characters; versions stay as they are. */
+export function shortVersion(value) {
+  return value && /^[0-9a-f]{12,}$/i.test(value) ? value.slice(0, 7) : value
+}
+
+/** The word before an update source's label: "marketplace · claude-plugins-official". */
+export const SOURCE_TYPE = { plugin: 'marketplace', 'skills-cli': 'skills', npm: 'npm' }
+
+/** Keys of the items of one kind that the last check marked available and that the app can update. */
+export function updatableKeys(view, kind, statuses) {
+  if (!view) return []
+  return view.items
+    .filter((i) => i.kind === kind && i.updateSource && i.updateSource.type !== 'manual' && statuses[i.key]?.status === 'available')
+    .map((i) => i.key)
+}
+
+/**
+ * The statuses to keep after an update action: an item that is gone, that was the one updated
+ * successfully, or whose installed version changed is current now, so its old status is dropped.
+ */
+export function settleStatuses(statuses, before, after, updatedKey) {
+  const old = new Map((before?.items ?? []).map((i) => [i.key, i]))
+  const next = {}
+  for (const [key, status] of Object.entries(statuses)) {
+    const now = after.items.find((i) => i.key === key)
+    if (!now || key === updatedKey) continue
+    if ((old.get(key)?.updateSource?.current ?? null) !== (now.updateSource?.current ?? null)) continue
+    next[key] = status
+  }
+  return next
+}

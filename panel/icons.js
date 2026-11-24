@@ -21,6 +21,8 @@ const paths = {
   info: '<circle cx="8" cy="8" r="5.75"/><path d="M8 7.25v3.5"/><circle cx="8" cy="5.1" r=".5"/>',
   eraser: '<path d="m9.2 2.8 4 4-6.4 6.4H3.7L2.3 11.8a1 1 0 0 1 0-1.4z"/><path d="M6.8 13.2h6.7"/><path d="m5.6 6.4 4 4"/>',
   users: '<circle cx="6" cy="5.5" r="2.25"/><path d="M2 13c.4-2.2 2-3.5 4-3.5s3.6 1.3 4 3.5"/><path d="M10.5 3.5a2.25 2.25 0 0 1 0 4.2"/><path d="M12 9.8c1 .5 1.8 1.6 2 3.2"/>',
+  update: '<path d="M8 11.5v-8"/><path d="m4.75 6.5 3.25-3.25 3.25 3.25"/><path d="M3.5 13.5h9"/>',
+  'check-updates': '<circle cx="8" cy="8" r="5.75"/><path d="M8 10.75v-5.25"/><path d="m5.75 7.5 2.25-2.25 2.25 2.25"/>',
   user: '<circle cx="8" cy="5.5" r="2.5"/><path d="M3.5 13.5c.5-2.5 2.3-4 4.5-4s4 1.5 4.5 4"/>',
 }
 

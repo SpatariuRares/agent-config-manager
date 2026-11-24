@@ -53,3 +53,32 @@ for (const scheme of ['dark', 'light'] as const) {
     await page.mouse.up()
   })
 }
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`screenshot updates ${scheme} 360px`, async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 900 })
+    await page.goto(`index.html?fixture&latency=0&theme=${scheme}`)
+    await expect(page.getByRole('tab', { name: /Plugins/ })).toContainText('22')
+    await page.getByRole('button', { name: 'Check for updates' }).click()
+    await expect(page.locator('.updates-status')).toContainText('Checked just now')
+    await page.screenshot({ animations: 'disabled', path: `${dir}/updates-plugins-${scheme}-360.png` })
+
+    await page.getByRole('tab', { name: /Skills/ }).click()
+    await page.screenshot({ animations: 'disabled', path: `${dir}/updates-skills-${scheme}-360.png` })
+
+    await page.getByRole('tab', { name: /MCP/ }).click()
+    await page.screenshot({ animations: 'disabled', path: `${dir}/updates-mcp-${scheme}-360.png` })
+
+    await page.getByRole('tab', { name: /Plugins/ }).click()
+    await page.locator('.item', { hasText: 'deploy-helpers' }).getByRole('button', { name: 'Update' }).click()
+    await expect(page.locator('pre.cmd')).toBeVisible()
+    await page.screenshot({ animations: 'disabled', path: `${dir}/updates-confirm-${scheme}-360.png` })
+
+    await page.getByRole('button', { name: 'Run update' }).click()
+    await expect(page.locator('#notice')).toContainText('Updated deploy-helpers')
+    await page.getByRole('tab', { name: /Skills/ }).click()
+    await page.getByRole('button', { name: /^Update all/ }).click()
+    await expect(page.locator('#notice')).toContainText('Updated 2 of 2 skills.')
+    await page.screenshot({ animations: 'disabled', path: `${dir}/updates-all-notice-${scheme}-360.png` })
+  })
+}

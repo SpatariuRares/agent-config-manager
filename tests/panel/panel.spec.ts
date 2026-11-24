@@ -42,7 +42,7 @@ async function drag(page: Page, source: Locator, target: () => Locator, { alt = 
 test('tabs show every class with its count, and arrow keys move between them', async ({ page }) => {
   await open(page)
   const tabs = page.getByRole('tablist').getByRole('tab')
-  await expect(tabs).toHaveText(['Plugins22', 'Skills8', 'Agents4', 'MCP5', 'Hooks4'])
+  await expect(tabs).toHaveText(['Plugins22', 'Skills8', 'Agents4', 'MCP6', 'Hooks4'])
   await expect(tab(page, 'Plugins')).toHaveAttribute('aria-selected', 'true')
   await tab(page, 'Plugins').focus()
   await page.keyboard.press('ArrowRight')

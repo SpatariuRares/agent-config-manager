@@ -1,7 +1,8 @@
 // The only module that knows how the panel reaches its backend.
-// Every backend answers two requests from src/adapters/view.ts:
-//   'view.get'   -> ViewAnswer
-//   'action.run' -> ActionAnswer, with input ActionRequest { action, versions }
+// Every backend answers three requests from src/adapters/view.ts:
+//   'view.get'      -> ViewAnswer
+//   'action.run'    -> ActionAnswer, with input ActionRequest { action, versions }
+//   'updates.check' -> UpdatesAnswer (network; sent only when the user asks)
 // A backend is just { request(name, input): Promise<answer> }; the transport adds versions and turns
 // transport failures into the same answer shapes, so the UI handles one kind of result.
 
@@ -17,7 +18,7 @@ function orcaBackend(orca) {
 }
 
 /**
- * Seam for the localhost server (not built yet): the same two requests as JSON over HTTP.
+ * Seam for the localhost server (not built yet): the same requests as JSON over HTTP.
  * Wire it in createTransport once the server exists, e.g. when the page is served from it.
  */
 export function httpBackend(baseUrl) {
@@ -39,6 +40,8 @@ export function httpBackend(baseUrl) {
 function fixtureBackend(params) {
   const latency = Number(params.get('latency') ?? 150)
   const backend = createFixtureBackend({ variant: params.get('fixture') || 'default', latency: Number.isFinite(latency) ? latency : 150 })
+  // Tests read the requests the panel sent; the fixture is never loaded inside Orca.
+  globalThis.ccmFixture = backend
   return { mode: 'fixture', request: backend.request, onTheme: () => undefined }
 }
 
@@ -84,6 +87,16 @@ export function createTransport({ search = location.search, orca = globalThis.or
       } catch (error) {
         const message = describe(error)
         return { result: { ok: false, reason: 'transport', message: `The action did not run: ${message}` }, view: { ok: false, error: message } }
+      }
+    },
+    /** @returns {Promise<{ ok: true, answer: import('../src/adapters/view.ts').UpdatesAnswer } | { ok: false, error: string }>} */
+    async checkUpdates() {
+      try {
+        const answer = await backend.request('updates.check', {})
+        if (!answer || typeof answer.statuses !== 'object') return { ok: false, error: 'The answer had no statuses.' }
+        return { ok: true, answer }
+      } catch (error) {
+        return { ok: false, error: describe(error) }
       }
     },
   }
