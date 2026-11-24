@@ -9,6 +9,7 @@
 // editJsonFile keeps every other key and server as it was, in the same 2-space format Copilot writes.
 import type { Action, ActionRequest, ActionResult, Kind } from '../../adapters/view.ts'
 import {
+  argsHaveSecret,
   backupTarget,
   CHANGED,
   editJsonFile,
@@ -20,6 +21,7 @@ import {
   restoreTrash,
   tilde,
   trashEntry,
+  urlHasSecret,
   versionOf,
   type Clock,
   type FileSystem,
@@ -107,6 +109,13 @@ async function moveServer(
       message: `"${ref.name}" has literal env or header values. Replace them with \${VAR} references first: a project file is shared with the team.`
     }
   }
+  if (project !== null && commandLineSecret(ref.config)) {
+    return {
+      ok: false,
+      reason: 'secret',
+      message: `"${ref.name}" has a secret-looking value in its args or url. Move it into an env value with a \${VAR} reference first: a project file is shared with the team.`
+    }
+  }
   for (const path of [file, ref.file]) {
     if (versionOf(await fs.readText(path)) !== (versions[path] ?? '')) return CHANGED
   }
@@ -131,6 +140,12 @@ function addServer(json: Json, ref: Ref & { kind: 'mcp' }, file: string): string
 function deleteServer(json: Json, ref: Ref & { kind: 'mcp' }): string | void {
   if (!isObject(json.mcpServers) || !Object.hasOwn(json.mcpServers, ref.name)) return `"${ref.name}" is no longer in ${ref.file}.`
   delete json.mcpServers[ref.name]
+}
+
+/** True when the args or the url hold a value that looks like a credential (the toolkit's redaction rules). */
+function commandLineSecret(config: Json): boolean {
+  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word): word is string => typeof word === 'string')
+  return argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))
 }
 
 /** True when env or headers hold a value that is not a `$VAR` / `${VAR}` reference. */

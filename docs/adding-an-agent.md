@@ -46,7 +46,7 @@ export interface AgentProvider {
 - `projectScopes`: per class, which project scopes a move or copy may target (`local` = only me, `project` = team), first one is the default. Leave a class out when items cannot go into a project.
 - `note`: one sentence on what is read-only and why. Users read it.
 
-**`buildView()`** returns items, the projects the agent knows, the version of every file it read (`versions`), backups and `problems`. Build keys with `itemKey(kind, ...)`: the router reads the class from the key. Never put secrets in an item (env values, headers, tokens in args or URLs): redact them.
+**`buildView()`** returns items, the projects the agent knows, the version of every file it read (`versions`), backups and `problems`. Build keys with `itemKey(kind, ...)`: the router reads the class from the key. Never put secrets in an item (env values, headers, tokens in args or URLs): redact them with the toolkit's `redactArgs`, `redactUrl` and `redactCommand`, and never build a key from a secret.
 
 **`runAction()`** implements what `supports` declares. Use the toolkit (`src/providers/toolkit.ts`) rather than writing files by hand:
 

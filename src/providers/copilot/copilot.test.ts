@@ -260,3 +260,39 @@ test('skills and agents move between Copilot folders only, and a removed one com
   assert.equal(fs.files[`${DIR}/agents/planner.agent.md`], FILES[`${DIR}/agents/planner.agent.md`])
   assert.deepEqual(exec.calls, [], 'no command was run')
 })
+
+test('A3: values after --key and -k are redacted too', async () => {
+  const { deps } = machine({ [MCP]: json({ mcpServers: { keyed: { command: 'srv', args: ['--key', 'KEYSECRET1', '-k', 'KSECRET2'] } } }) })
+  const view = await viewOf(deps)
+  assert.equal(view.items.find((item) => item.name === 'keyed')?.mcp?.target, 'srv --key <redacted> -k <redacted>')
+})
+
+test('A4: a trusted folder that is a link to the home folder does not list the shared global folders twice', async () => {
+  const fs = fakeFs(
+    { ...structuredClone(FILES), [`${DIR}/config.json`]: json({ trustedFolders: [SHOP, '/link'] }) },
+    { '/link': HOME }
+  )
+  const view = await viewOf({ fs, exec: fakeExec(), home: HOME, clock: CLOCK })
+  assert.deepEqual(
+    view.items.filter((item) => item.name === 'shared').map((item) => item.project),
+    [null]
+  )
+})
+
+test('an MCP server with a secret in its args or url is not copied into a project file, which the team shares', async () => {
+  const { deps, fs } = machine({
+    [MCP]: json({
+      mcpServers: {
+        argy: { command: 'srv', args: ['--token', 'sk-live-SECRET1234567890'] },
+        urly: { type: 'http', url: 'https://x.io/mcp?token=abc123tok' }
+      }
+    })
+  })
+  const before = structuredClone(fs.files)
+  for (const name of ['argy', 'urly']) {
+    const moved = await run(deps, { type: 'move', key: mcpKey(MCP, name), to: { project: SHOP, scope: 'project' }, copy: true })
+    assert.equal(!moved.ok && moved.reason, 'secret', name)
+    assert.doesNotMatch(moved.message, /sk-live|abc123tok/)
+  }
+  assert.deepEqual(fs.files, before)
+})

@@ -1,6 +1,6 @@
 // Reads what Copilot CLI loads into the panel's items. Nothing here writes.
 // Secrets: env and headers are never read into an item, and the commands and URLs that are shown pass through
-// redact(). Parse errors are reported with a fixed message, never the parser's, because that can quote the file.
+// the toolkit's redaction (redactArgs, redactUrl, redactCommand). Parse errors are reported with a fixed message, never the parser's, because that can quote the file.
 import type { Item, Kind } from '../../adapters/view.ts'
 import {
   existingProjects,
@@ -11,6 +11,9 @@ import {
   readAgents,
   readEntryDir,
   readSkills,
+  redactArgs,
+  redactCommand,
+  redactUrl,
   sortByName,
   versionOf,
   type EntryRef,
@@ -63,9 +66,20 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
   })
 
   const projects = await trustedProjects(fs, paths, problems)
+  // A folder or file reached twice (the home folder trusted as a project, under its own name or through a link)
+  // is read once, at its first place: global comes first.
+  const seen = new Set<string>()
+  const firstVisit = async (path: string) => {
+    const real = await fs.realPath(path)
+    if (real === null) return true
+    if (seen.has(real)) return false
+    seen.add(real)
+    return true
+  }
   for (const project of [null, ...projects]) {
     for (const kind of ['skills', 'agents'] as const) {
       for (const place of placesOf(paths, kind, project)) {
+        if (!(await firstVisit(place.path))) continue
         for (const entry of await readEntryDir(fs, kind, place.path, kind === 'skills' ? readSkills : readAgentFiles)) {
           const key = itemKey(kind, entry.entry)
           add({ ...base(kind, key, entry.name, project, entry.path, place), description: entry.description }, { kind, project, entry })
@@ -73,6 +87,7 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
       }
     }
     for (const place of placesOf(paths, 'mcp', project)) {
+      if (!(await firstVisit(place.path))) continue
       const text = await fs.readText(place.path)
       versions[place.path] = versionOf(text)
       for (const [name, config] of serversIn(text, place.path, problems)) {
@@ -81,6 +96,7 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
       }
     }
     for (const place of placesOf(paths, 'hooks', project)) {
+      if (!(await firstVisit(place.path))) continue
       for (const file of await fs.listEntries(place.path)) {
         if (!file.endsWith('.json')) continue
         const path = `${place.path}/${file}`
@@ -142,8 +158,8 @@ function describeServer(config: Json): { transport: string; target: string } {
   const url = typeof config.url === 'string' ? config.url : null
   const type = typeof config.type === 'string' ? config.type : url ? 'http' : 'stdio'
   const args = Array.isArray(config.args) ? config.args.filter((arg) => typeof arg === 'string') : []
-  const target = url ?? [config.command, ...args].filter((part) => typeof part === 'string' && part !== '').join(' ')
-  return { transport: type === 'local' ? 'stdio' : type, target: redact(target) }
+  const target = url !== null ? redactUrl(url) : redactArgs([config.command, ...args].filter((part) => typeof part === 'string' && part !== '')).join(' ')
+  return { transport: type === 'local' ? 'stdio' : type, target }
 }
 
 /** Hook entries of a hooks file: `{ "version": 1, "hooks": { <event>: [ {...} ] } }`. env is never read. */
@@ -156,7 +172,7 @@ function hooksIn(text: string | null, file: string, problems: string[]) {
   }
   return Object.entries(json.hooks).flatMap(([event, entries]) =>
     (Array.isArray(entries) ? entries : []).flatMap((entry, index) =>
-      isObject(entry) ? [{ event, index, matcher: typeof entry.matcher === 'string' ? entry.matcher : '', command: redact(commandOf(entry)) }] : []
+      isObject(entry) ? [{ event, index, matcher: typeof entry.matcher === 'string' ? entry.matcher : '', command: redactCommand(commandOf(entry)) }] : []
     )
   )
 }
@@ -196,19 +212,4 @@ async function readManifest(fs: FileSystem, dir: string, problems: string[]): Pr
     return json ?? {}
   }
   return {}
-}
-
-const SECRET_NAME = String.raw`[\w.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|apikey|auth|credential)[\w.-]*`
-
-/**
- * Hides values that look secret in a command or URL shown to the user: `KEY=value`, `?token=value`, `--api-key value`,
- * `Bearer value`, `user:pass@` in a URL, and well-known token prefixes. A heuristic: env and headers are never shown at all.
- */
-export function redact(text: string): string {
-  return text
-    .replace(/(Bearer\s+)\S+/gi, '$1<redacted>')
-    .replace(/(\/\/)[^/\s@]+@/g, '$1<redacted>@')
-    .replace(new RegExp(`(${SECRET_NAME}\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s&"']+)`, 'gi'), '$1<redacted>')
-    .replace(new RegExp(`(--?${SECRET_NAME}\\s+)([^\\s-]\\S*)`, 'gi'), '$1<redacted>')
-    .replace(/\b(?:gh[pousr]_|github_pat_|sk-|xox[abp]-)[A-Za-z0-9_-]{8,}/g, '<redacted>')
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fakeFs } from '../../core/test-support.ts'
 import { fakeExec, providerContract } from '../testing.ts'
-import { claudeProvider, CLAUDE_SUPPORTS } from './index.ts'
+import { claudeProvider, CLAUDE_PROJECT_SCOPES, CLAUDE_SUPPORTS } from './index.ts'
 
 const USER = '/home/.claude/settings.json'
 const files = {
@@ -30,6 +30,7 @@ test('Claude Code info: id, name, config home, all five classes and what works t
     detected: true,
     kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'],
     supports: CLAUDE_SUPPORTS,
+    projectScopes: CLAUDE_PROJECT_SCOPES,
     configHome: '~/.claude'
   })
 })
@@ -51,4 +52,31 @@ test('Claude Code runs its CLI through the shared command runner, by argv', asyn
   const result = await provider.runAction(deps, { agent: 'claude', action: { type: 'uninstall', key }, versions: view.versions })
   assert.equal(result.ok, true, result.message)
   assert.deepEqual(exec.calls, ['claude plugin uninstall a@m --scope user --keep-data --json @ -'])
+})
+
+test('B2: MCP args and URLs are shown without their secrets', async () => {
+  const userConfig = {
+    projects: { '/work/shop': {} },
+    mcpServers: {
+      probe: { type: 'stdio', command: 'npx', args: ['srv', '--api-key', 'sk-live-SECRET1234567890'] },
+      'probe-url': { type: 'http', url: 'https://x.io/mcp?token=abc123tok' }
+    }
+  }
+  const fs = fakeFs({ ...files, '/home/.claude.json': JSON.stringify(userConfig) })
+  const view = await claudeProvider().buildView({ fs, exec: fakeExec(), home: '/home' })
+  assert.doesNotMatch(JSON.stringify(view.items), /sk-live|abc123tok/)
+  assert.equal(view.items.find((item) => item.name === 'probe')?.mcp?.target, 'npx srv --api-key <redacted>')
+  assert.equal(view.items.find((item) => item.name === 'probe-url')?.mcp?.target, 'https://x.io/mcp?token=<redacted>')
+})
+
+test('B2: hook commands are shown without their secrets, in the item and in its key', async () => {
+  const settings = {
+    hooks: { Stop: [{ hooks: [{ type: 'command', command: "curl -H 'Authorization: Bearer hunter2' https://x.io" }] }] }
+  }
+  const fs = fakeFs({ ...files, '/home/.claude/settings.json': JSON.stringify(settings) })
+  const view = await claudeProvider().buildView({ fs, exec: fakeExec(), home: '/home' })
+  const hook = view.items.find((item) => item.kind === 'hooks')
+  assert.ok(hook)
+  assert.doesNotMatch(JSON.stringify(view.items), /hunter2/)
+  assert.doesNotMatch(hook.name, /hunter2/)
 })

@@ -225,3 +225,36 @@ test('snapshot backs up every file this app may change; restore refuses a backup
   assert.equal(evil.result.ok, false)
   assert.equal(m.fs.files['/etc/passwd'], undefined)
 })
+
+test('B4: a server with a secret in its args or url is never put on a gemini command line, nor copied into a project', async () => {
+  const fixture = {
+    ...files(),
+    [SHOP_SETTINGS]: json({ mcpServers: { leaky: { command: 'srv', args: ['--api-key', 'sk-live-SECRET1234567890'] } } })
+  }
+  const m = withCli(() => undefined, fixture)
+  const view = await viewOf(m.deps)
+  const leaky = itemOf(view, 'mcp', 'leaky', SHOP)
+  const vercel = itemOf(view, 'mcp', 'vercel')
+  for (const item of [leaky, vercel]) {
+    assert.equal(item.movable, false, item.name)
+    assert.match(item.notMovableReason ?? '', /secret/)
+  }
+  const toGlobal = await act(m.deps, { type: 'move', key: leaky.key, to: { project: null }, copy: true }, view.versions)
+  const toProject = await act(m.deps, { type: 'move', key: vercel.key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
+  for (const answer of [toGlobal, toProject]) {
+    assert.equal(refused(answer.result).reason, 'not-movable')
+    assert.doesNotMatch(answer.result.message, /sk-live|abc123token/)
+  }
+  assert.deepEqual(m.exec.calls, [])
+})
+
+test('B4: a failing gemini command is named with its server and outcome, never its argv values or a token it prints', async () => {
+  const m = withCli(() => ({ ok: false, output: 'Error: rejected --api-key sk-live-SECRET1234567890' }))
+  const view = await viewOf(m.deps)
+  const answer = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'context7').key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
+  assert.equal(refused(answer.result).reason, 'cli')
+  assert.match(answer.result.message, /gemini mcp add/)
+  assert.match(answer.result.message, /context7/)
+  assert.doesNotMatch(answer.result.message, /sk-live|--transport|--scope|@upstash/)
+  assert.equal(m.exec.calls.length, 1)
+})

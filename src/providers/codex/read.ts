@@ -3,6 +3,7 @@
 import { parse } from 'smol-toml'
 import type { Item, Scope } from '../../adapters/view.ts'
 import {
+  argsHaveSecret,
   existingProjects,
   isObject,
   itemKey,
@@ -10,6 +11,10 @@ import {
   readEntryDir,
   readJson,
   readSkills,
+  redactArgs,
+  redactCommand,
+  redactUrl,
+  sameFolder,
   tilde,
   versionOf,
   type BackupStore,
@@ -48,16 +53,22 @@ export const codexBackups = (paths: CodexPaths): BackupStore => ({
 
 /** Folders Codex reads skills from: user scope first, then a project's. */
 export function skillDirs(paths: CodexPaths, project: string | null): string[] {
-  if (project === null) return [`${paths.codexHome}/skills`, `${paths.home}/.agents/skills`]
-  return [`${project}/.agents/skills`, `${project}/.codex/skills`]
+  if (project === null) return [`${paths.codexHome}/skills`, sharedSkillDir(paths, project)]
+  return [sharedSkillDir(paths, project), `${project}/.codex/skills`]
 }
+
+/** The .agents/skills folder of a place: Gemini CLI and Copilot CLI read it too, so this app never changes it. */
+export const sharedSkillDir = (paths: CodexPaths, project: string | null) => `${project ?? paths.home}/.agents/skills`
+
+export const SHARED_SKILL_REASON = 'It is in a .agents/skills folder, which other agents (Gemini CLI, Copilot CLI) read too, so it is read-only here.'
 
 /** Folders Codex reads custom agent files (`*.toml`) from. */
 export const agentDir = (paths: CodexPaths, project: string | null) => (project === null ? `${paths.codexHome}/agents` : `${project}/.codex/agents`)
 
-/** Where a move or copy puts a skill or agent: the first folder Codex reads for that place. */
+/** Where a move or copy puts a skill or agent: Codex's own folder of that place, never the shared .agents/skills. */
 export function destinationDir(paths: CodexPaths, kind: EntryKind, project: string | null): string {
-  return kind === 'skills' ? skillDirs(paths, project)[0] : agentDir(paths, project)
+  if (kind === 'agents') return agentDir(paths, project)
+  return project === null ? `${paths.codexHome}/skills` : `${project}/.codex/skills`
 }
 
 /** What a write needs to know about an item, by item key. */
@@ -91,6 +102,9 @@ export interface CodexRead {
 /** Server names `codex mcp add/remove` accept (validate_server_name in codex-rs/cli/src/mcp_cmd.rs). */
 export const validServerName = (name: string) => /^[A-Za-z0-9_:@/.-]+$/.test(name)
 
+/** A name this app passes to `codex mcp add/remove`: valid for Codex, and not read as an option (`-x`). */
+export const usableServerName = (name: string) => validServerName(name) && !name.startsWith('-')
+
 /** A stdio server `codex mcp add NAME -- COMMAND ARGS...` recreates exactly: nothing but command and args. */
 export function copyableServer(server: Json): string | null {
   if (typeof server.command !== 'string') {
@@ -100,6 +114,9 @@ export function copyableServer(server: Json): string | null {
   if (extra.length > 0) return `it has settings \`codex mcp add\` cannot carry (${extra.join(', ')})`
   if (server.args !== undefined && !(Array.isArray(server.args) && server.args.every((arg) => typeof arg === 'string'))) {
     return 'its args are not a list of strings'
+  }
+  if (argsHaveSecret([server.command, ...(server.args ?? [])])) {
+    return 'its command line holds a secret-looking value, and `codex mcp add` would put it where other programs can read it'
   }
   return null
 }
@@ -136,7 +153,10 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
   const projectsTable = table(config.projects)
   const trusted = new Set(Object.keys(projectsTable).filter((path) => table(projectsTable[path]).trust_level === 'trusted'))
   // The home folder is not a project: its .agents/skills and .codex are the user-scope folders.
-  const projects = (await existingProjects(fs, Object.keys(projectsTable))).filter((path) => path !== home && path !== paths.codexHome)
+  const projects: string[] = []
+  for (const path of await existingProjects(fs, Object.keys(projectsTable))) {
+    if (!(await sameFolder(fs, path, home)) && !(await sameFolder(fs, path, paths.codexHome))) projects.push(path)
+  }
 
   await readPlugins(deps, paths, config, add)
 
@@ -162,11 +182,13 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
     const { project, scope } = place
     // Skills: folders holding SKILL.md.
     for (const dir of skillDirs(paths, project)) {
+      const shared = dir === sharedSkillDir(paths, project)
       for (const skill of await readEntryDir(fs, 'skills', dir, readSkills)) {
         versions[skill.path] = versionOf(await fs.readText(skill.path))
         const key = itemKey('skills', skill.entry)
         const relative = skill.link !== null && !skill.link.startsWith('/')
-        const reason = relative ? `It is a relative link (${skill.link}); moving it would break it.` : undefined
+        const reason = shared ? SHARED_SKILL_REASON : relative ? `It is a relative link (${skill.link}); moving it would break it.` : undefined
+        const movable = reason === undefined
         add(
           {
             key,
@@ -176,11 +198,11 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
             project,
             scope,
             source: skill.path,
-            movable: !relative,
+            movable,
             notMovableReason: reason,
-            removable: true
+            removable: !shared
           },
-          { kind: 'skills', entry: skill, file: skill.path, project, movable: !relative, removable: true, reason }
+          { kind: 'skills', entry: skill, file: skill.path, project, movable, removable: !shared, reason }
         )
       }
     }
@@ -246,8 +268,8 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
       const key = itemKey('mcp', place.configFile, name)
       const http = typeof value.url === 'string'
       const args = Array.isArray(value.args) ? value.args.map(String) : []
-      const target = http ? String(value.url) : [String(value.command ?? ''), ...args].join(' ').trim()
-      const validName = validServerName(name)
+      const target = http ? redactUrl(String(value.url)) : redactArgs([String(value.command ?? ''), ...args]).join(' ').trim()
+      const validName = usableServerName(name)
       let movable = false
       let notMovableReason: string
       if (project === null) {
@@ -309,7 +331,7 @@ function addHooks(events: Json, file: string, place: { project: string | null; s
         if (!isObject(handler)) return
         const command =
           typeof handler.command === 'string'
-            ? handler.command
+            ? redactCommand(handler.command)
             : handler.type === 'mcp_tool'
               ? `mcp_tool ${String(handler.server ?? '')} ${String(handler.tool ?? '')}`.trim()
               : String(handler.type ?? '')

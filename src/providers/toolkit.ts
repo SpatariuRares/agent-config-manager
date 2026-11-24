@@ -28,5 +28,7 @@ export { describe, readAgents, readSkills, sortByName, type Agent, type Skill } 
 export { moveEntry, readEntryDir, type EntryKind, type EntryPlaces, type EntryRef, type EntryResult } from '../core/entries.ts'
 // Running an agent CLI: refuse user values that look like options before building argv.
 export { optionLikeRefusal } from '../core/cli.ts'
+// Secret-safe text: MCP args and URLs, hook commands and CLI output pass through these before an item or a message shows them.
+export { argsHaveSecret, looksSecret, REDACTED, redactArgs, redactCommand, redactUrl, urlHasSecret } from '../core/redact.ts'
 // Item keys the router can read the kind from.
 export { itemKey, KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'

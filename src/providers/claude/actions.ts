@@ -1,6 +1,8 @@
 // Claude Code's view and actions, behind the Claude provider (./index.ts). Composes the Claude modules here
 // with the shared core; the router (../router.ts) has already checked the agent and that the action is supported.
+import { createHash } from 'node:crypto'
 import { isObject } from '../../core/json.ts'
+import { redactCommand } from '../../core/redact.ts'
 import type { Clock } from '../../core/ports.ts'
 import type { Action, ActionRequest, ActionResult, Item, Kind, Target } from '../../adapters/view.ts'
 import type { ProviderView } from '../types.ts'
@@ -477,8 +479,9 @@ function labels(paths: ClaudePaths) {
 export const pluginKey = (project: string | null, scope: string, id: string) => `plugins:${JSON.stringify([project, scope, id])}`
 export const entryKey = (kind: 'skills' | 'agents', entry: string) => `${kind}:${kind === 'skills' ? `${entry}/SKILL.md` : entry}`
 export const mcpKey = (project: string | null, scope: string, name: string) => `mcp:${JSON.stringify([project, scope, name])}`
+/** The command is hashed, so a secret in it never reaches the panel through the key. */
 export const hookKey = (file: string, event: string, rawMatcher: string, command: string, n: number) =>
-  `hooks:${JSON.stringify([file, event, rawMatcher, command, n])}`
+  `hooks:${JSON.stringify([file, event, rawMatcher, createHash('sha256').update(command).digest('hex').slice(0, 16), n])}`
 
 // ---- reading
 
@@ -594,13 +597,13 @@ async function read(deps: ClaudeDeps): Promise<Read> {
         ...base,
         key: hookKey(hook.file, hook.event, hook.rawMatcher, hook.command, hook.n),
         kind: 'hooks',
-        name: hook.command,
+        name: redactCommand(hook.command),
         description: `${hook.event} · ${hook.matcher}`,
         project: hook.project,
         scope: hook.scope,
         source: hook.file,
         removable: true,
-        hook: { event: hook.event, matcher: hook.matcher, command: hook.command }
+        hook: { event: hook.event, matcher: hook.matcher, command: redactCommand(hook.command) }
       },
       { kind: 'hooks', hook }
     )

@@ -2,25 +2,33 @@
 // per project. Read-only; never opens .env, credential, history or log files. Sources are listed in ./index.ts.
 import type { Item, Kind } from '../../adapters/view.ts'
 import {
+  argsHaveSecret,
   existingProjects,
   isObject,
   itemKey,
   listAllBackups,
   readAgents,
   readSkills,
+  redactArgs,
+  redactCommand,
+  redactUrl,
+  sameFolder,
+  urlHasSecret,
   versionOf,
   type FileSystem,
   type Json,
   type ProviderView
 } from '../toolkit.ts'
 import { agentDir, settingsOf, skillDirs, type GeminiPaths } from './paths.ts'
-import { redactCommand, redactUrl, redactWords } from './redact.ts'
 
 export const GEMINI = 'gemini'
 
 // ---------------------------------------------------------------------------------------------- JSON with comments
 
-/** Gemini CLI reads settings.json through strip-json-comments: `//` and `/* *\/` outside strings are allowed. */
+/**
+ * Gemini CLI reads settings.json through strip-json-comments: `//` and `/* *\/` outside strings are allowed.
+ * Comments become spaces, so a parse error's position is still a position in the file.
+ */
 export function stripComments(text: string): string {
   let out = ''
   let i = 0
@@ -31,7 +39,9 @@ export function stripComments(text: string): string {
       while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1
       out += text.slice(start, ++i)
     } else if (c === '/' && text[i + 1] === '/') {
+      const start = i
       while (i < text.length && text[i] !== '\n') i++
+      out += ' '.repeat(i - start)
     } else if (c === '/' && text[i + 1] === '*') {
       const end = text.indexOf('*/', i + 2)
       const stop = end === -1 ? text.length : end + 2
@@ -55,7 +65,9 @@ async function readObject(fs: FileSystem, file: string, versions: Record<string,
     if (isObject(value)) return { text, json: value }
     problems.push(`${file}: expected a JSON object`)
   } catch (error) {
-    problems.push(`${file}: ${(error as Error).message}`)
+    // Never quote the parser's message: it can echo the file's text, secrets included (as readJson in the core).
+    const at = /position (\d+)/.exec((error as Error).message)?.[1]
+    problems.push(`${file}: not valid JSON${at === undefined ? '' : ` (near character ${at})`}`)
   }
   return { text, json: {} as Json, broken: true }
 }
@@ -201,7 +213,7 @@ export function targetOf(config: Json): string {
   if (url !== null) return redactUrl(url)
   if (typeof config.tcp === 'string') return redactUrl(config.tcp)
   const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word) => typeof word === 'string' && word !== '')
-  return redactWords(words).join(' ')
+  return redactArgs(words).join(' ')
 }
 
 /** Keys `gemini mcp add` can write back exactly (commands/mcp/add.ts). */
@@ -221,6 +233,12 @@ export function moveRefusal(config: Json): string | null {
   if (config.timeout !== undefined && typeof config.timeout !== 'number') return 'Its timeout is not a number.'
   if (config.trust !== undefined && typeof config.trust !== 'boolean') return 'Its trust is not true or false.'
   if (config.description !== undefined && typeof config.description !== 'string') return 'Its description is not text.'
+  // Checked last, so the reason names a real fix. gemini mcp add takes args and url on its command line, and a
+  // project settings file is shared with the team: neither may receive a token.
+  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word) => typeof word === 'string')
+  if (argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))) {
+    return 'Its args or url hold a secret-looking value: gemini mcp add would put it on a command line other programs can read, and a project settings file is shared with the team. Move it by hand, with the secret in an environment variable.'
+  }
   return null
 }
 
@@ -260,7 +278,9 @@ export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Set
 
   const registry = (await readObject(fs, paths.projects, versions, problems, false)).json
   const candidates = isObject(registry.projects) ? Object.keys(registry.projects) : []
-  const projects = (await existingProjects(fs, candidates)).filter((project) => withSlashes(project) !== withSlashes(paths.home))
+  const projects: string[] = []
+  // The home folder is not a project, whatever path (a link, an alias) names it.
+  for (const project of await existingProjects(fs, candidates)) if (!(await sameFolder(fs, project, paths.home))) projects.push(project)
 
   const places: Setup['places'] = []
   for (const project of [null, ...projects]) {

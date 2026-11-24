@@ -9,6 +9,8 @@ import {
   isTrashName,
   itemKey,
   optionLikeRefusal,
+  redactCommand,
+  redactUrl,
   restoreFile,
   tilde,
   versionOf,
@@ -18,7 +20,6 @@ import {
 } from '../toolkit.ts'
 import { projectSettings, settingsOf, type GeminiPaths } from './paths.ts'
 import { extensionEnabled, readSetup, rulesFor, stripComments, transportOf, moveRefusal, type Extension, type McpServer, type Setup } from './read.ts'
-import { redactUrl } from './redact.ts'
 
 type Done = ActionResult & { ok: true }
 type Refused = ActionResult & { ok: false }
@@ -28,8 +29,14 @@ const refuse = (reason: string, message: string): Refused => ({ ok: false, reaso
 const CHANGED = refuse('changed', 'A Gemini CLI settings file changed since it was read. Refresh and try again.')
 const GONE = refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
 
-/** The last lines of a CLI's output, for messages. */
-const tail = (output: string) => output.trim().split('\n').slice(-3).join(' ').slice(0, 400)
+/** The last lines of a CLI's output, for messages, with anything secret-looking redacted. */
+const tail = (output: string) => redactCommand(output.trim().split('\n').slice(-3).join(' ').slice(0, 400))
+
+/**
+ * How a message names a run: the subcommand and what it acted on (`gemini mcp add for context7`). Never the whole
+ * argv: its values (args, urls, descriptions) can hold tokens.
+ */
+const named = (argv: string[], subject: string) => `gemini ${argv.slice(0, 2).join(' ')} for ${subject}`
 
 /** A JSON (or JSONC) file as an object; null when it exists but is not one. */
 async function objectAt(deps: ProviderDeps, file: string, comments: boolean): Promise<Json | null> {
@@ -66,15 +73,15 @@ async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups
   return { ok: true, backups }
 }
 
-/** Runs `gemini <argv>` (never a shell) in `cwd`; a failure becomes a refusal naming the command. */
-async function gemini(ctx: Context, argv: string[], cwd: string | null, timeoutMs?: number): Promise<{ ok: true; output: string } | Refused> {
+/** Runs `gemini <argv>` (never a shell) in `cwd`; a failure becomes a refusal naming the command and its subject. */
+async function gemini(ctx: Context, argv: string[], subject: string, cwd: string | null, timeoutMs?: number): Promise<{ ok: true; output: string } | Refused> {
   const result = await ctx.deps.exec.run('gemini', argv, cwd, timeoutMs ? { timeoutMs } : undefined)
-  if (!result.ok) return refuse('cli', `gemini ${argv.join(' ')} failed: ${tail(result.output) || 'no output'}`)
+  if (!result.ok) return refuse('cli', `${named(argv, subject)} failed: ${tail(result.output) || 'no output'}`)
   return { ok: true, output: result.output }
 }
 
-const unchanged = (argv: string[], file: string, output: string, say: (path: string) => string) =>
-  refuse('cli', `gemini ${argv.join(' ')} did not change ${say(file)}: ${tail(output) || 'no output'}`)
+const unchanged = (argv: string[], subject: string, file: string, output: string, say: (path: string) => string) =>
+  refuse('cli', `${named(argv, subject)} did not change ${say(file)}: ${tail(output) || 'no output'}`)
 
 const restoreOf = (backup: string | undefined): Action | undefined => (backup ? { type: 'restore', name: backup.slice(backup.lastIndexOf('/') + 1) } : undefined)
 
@@ -143,10 +150,10 @@ async function toggleExtension(ctx: Context, setup: Setup, key: string, extensio
   if (!guarded.ok) return guarded
   // `--scope user` writes a rule for the home folder, `--scope workspace` one for the folder it runs in.
   const argv = ['extensions', enabled ? 'enable' : 'disable', '--scope', project === null ? 'user' : 'workspace', extension.name]
-  const ran = await gemini(ctx, argv, project)
+  const ran = await gemini(ctx, argv, extension.name, project)
   if (!ran.ok) return ran
   const after = await objectAt(ctx.deps, paths.enablement, false)
-  if (after === null || extensionEnabled(after, extension.name, folder) !== enabled) return unchanged(argv, paths.enablement, ran.output, ctx.say)
+  if (after === null || extensionEnabled(after, extension.name, folder) !== enabled) return unchanged(argv, extension.name, paths.enablement, ran.output, ctx.say)
   // A rule for a folder replaces the rules of the folders inside it (Override.isChildOf).
   const cleared = setup.projects.filter(
     (other) => other !== project && rulesFor(setup.enablement, extension.name, other).length > 0 && rulesFor(after, extension.name, other).length === 0
@@ -159,9 +166,9 @@ async function uninstallExtension(ctx: Context, extension: Extension) {
   const guarded = await guard(ctx, [ctx.paths.enablement])
   if (!guarded.ok) return guarded
   const argv = ['extensions', 'uninstall', extension.name]
-  const ran = await gemini(ctx, argv, null)
+  const ran = await gemini(ctx, argv, extension.name, null)
   if (!ran.ok) return ran
-  if ((await ctx.deps.fs.realPath(extension.dir)) !== null) return unchanged(argv, extension.dir, ran.output, ctx.say)
+  if ((await ctx.deps.fs.realPath(extension.dir)) !== null) return unchanged(argv, extension.name, extension.dir, ran.output, ctx.say)
   const source = extension.install.source
   const again = source ? ` To install it again: gemini extensions install ${source.startsWith('/') ? source : redactUrl(source)}` : ''
   return done(`Uninstalled ${extension.name}.${again}`)
@@ -175,7 +182,7 @@ async function updateExtension(ctx: Context, extension: Extension) {
   const guarded = await guard(ctx, [ctx.paths.enablement])
   if (!guarded.ok) return guarded
   const argv = ['extensions', 'update', extension.name]
-  const ran = await gemini(ctx, argv, null, 120_000)
+  const ran = await gemini(ctx, argv, extension.name, null, 120_000)
   if (!ran.ok) {
     return refuse('cli', `${ran.message} If the update asks to approve new permissions, run gemini extensions update ${extension.name} in a terminal.`)
   }
@@ -183,7 +190,7 @@ async function updateExtension(ctx: Context, extension: Extension) {
   const version = manifest !== null && typeof manifest.version === 'string' ? manifest.version : null
   if (version !== null && version !== extension.version) return done(`Updated ${extension.name} from ${extension.version ?? '?'} to ${version}.`)
   if (/up to date|No extensions to update/i.test(ran.output)) return done(`${extension.name} is already up to date.`)
-  return refuse('cli', `gemini ${argv.join(' ')} did not update ${extension.name}: ${tail(ran.output) || 'no output'}`)
+  return refuse('cli', `${named(argv, extension.name)} did not update it: ${tail(ran.output) || 'no output'}`)
 }
 
 // ------------------------------------------------------------------------------------------------------- MCP
@@ -206,9 +213,9 @@ async function toggleMcp(ctx: Context, key: string, server: McpServer, blocked: 
   if (!guarded.ok) return guarded
   // The CLI looks the name up in the settings of the folder it runs in, so a project's server runs there.
   const argv = ['mcp', enabled ? 'enable' : 'disable', server.name]
-  const ran = await gemini(ctx, argv, server.project)
+  const ran = await gemini(ctx, argv, server.name, server.project)
   if (!ran.ok) return ran
-  if ((await mcpState(ctx, server.name)) !== enabled) return unchanged(argv, paths.mcpEnablement, ran.output, ctx.say)
+  if ((await mcpState(ctx, server.name)) !== enabled) return unchanged(argv, server.name, paths.mcpEnablement, ran.output, ctx.say)
   return done(
     `Turned ${server.name} ${enabled ? 'on' : 'off'}.`,
     { type: 'setEnabled', key, enabled: !enabled },
@@ -227,9 +234,9 @@ async function removeMcp(ctx: Context, server: McpServer) {
   const guarded = await guard(ctx, [server.file])
   if (!guarded.ok) return guarded
   const argv = ['mcp', 'remove', '--scope', scopeArg(server.project), server.name]
-  const ran = await gemini(ctx, argv, server.project)
+  const ran = await gemini(ctx, argv, server.name, server.project)
   if (!ran.ok) return ran
-  if (await hasServer(ctx, server.file, server.name)) return unchanged(argv, server.file, ran.output, ctx.say)
+  if (await hasServer(ctx, server.file, server.name)) return unchanged(argv, server.name, server.file, ran.output, ctx.say)
   return done(`Removed ${server.name} from ${ctx.say(server.file)}.`, restoreOf(guarded.backups.get(server.file)))
 }
 
@@ -268,14 +275,14 @@ async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { proj
   const guarded = await guard(ctx, copy ? [file] : [file, server.file])
   if (!guarded.ok) return guarded
   const add = addArgv(server, destination)
-  const added = await gemini(ctx, add, destination)
+  const added = await gemini(ctx, add, server.name, destination)
   if (!added.ok) return added
-  if (!(await hasServer(ctx, file, server.name))) return unchanged(add, file, added.output, ctx.say)
+  if (!(await hasServer(ctx, file, server.name))) return unchanged(add, server.name, file, added.output, ctx.say)
   const destinationKey = itemKey('mcp', destination, server.name)
   if (copy) return done(`Copied ${server.name} to ${place}.`, { type: 'remove', key: destinationKey })
 
   const remove = ['mcp', 'remove', '--scope', scopeArg(server.project), server.name]
-  const removed = await gemini(ctx, remove, server.project)
+  const removed = await gemini(ctx, remove, server.name, server.project)
   const back: Action = { type: 'move', key: destinationKey, to: { project: server.project, scope: 'project' }, copy: false }
   if (!removed.ok || (await hasServer(ctx, server.file, server.name))) {
     const why = removed.ok ? tail(removed.output) || 'no output' : removed.message

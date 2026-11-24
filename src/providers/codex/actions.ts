@@ -6,6 +6,7 @@ import {
   backUp,
   backupTarget,
   CHANGED,
+  redactCommand,
   isObject,
   isTrashName,
   itemKey,
@@ -19,7 +20,7 @@ import {
   type ProviderDeps
 } from '../toolkit.ts'
 import { parse } from 'smol-toml'
-import { agentDir, codexBackups, codexPaths, destinationDir, copyableServer, readCodex, skillDirs, validServerName, type CodexRead, type Ref } from './read.ts'
+import { agentDir, codexBackups, codexPaths, destinationDir, copyableServer, readCodex, skillDirs, usableServerName, type CodexRead, type Ref } from './read.ts'
 
 /** `codex mcp add/remove` can take a while on first run; never wait forever. */
 const CLI_TIMEOUT_MS = 60_000
@@ -111,7 +112,8 @@ async function runMcpCli(deps: ProviderDeps, argv: string[], versions: Record<st
   const result = await deps.exec.run('codex', argv, null, { timeoutMs: CLI_TIMEOUT_MS })
   if (!result.ok) {
     const saved = backup === null ? '' : ` ~/.codex/config.toml was backed up first as ${baseName(backup)}.`
-    return refuse('cli-failed', `codex ${argv.slice(0, 2).join(' ')} failed: ${result.output.trim() || 'no output'}.${saved}`)
+    // Only the subcommand is named: argv values never go into a message, and the output is redacted too.
+    return refuse('cli-failed', `codex ${argv.slice(0, 2).join(' ')} failed: ${redactCommand(result.output.trim()) || 'no output'}.${saved}`)
   }
   return { ok: true, backup, output: result.output }
 }
@@ -119,7 +121,7 @@ async function runMcpCli(deps: ProviderDeps, argv: string[], versions: Record<st
 async function removeServer(deps: ProviderDeps, ref: Ref & { kind: 'mcp' }, versions: Record<string, string>): Promise<ActionResult> {
   if (ref.project !== null) return refuse('not-removable', 'This app never rewrites a project .codex/config.toml; `codex mcp remove` only edits ~/.codex/config.toml.')
   const refused = optionLikeRefusal(ref.name, 'An MCP server name')
-  if (refused !== null || !validServerName(ref.name)) return refuse('not-removable', refused?.output ?? `\`codex mcp remove\` refuses the name "${ref.name}".`)
+  if (refused !== null || !usableServerName(ref.name)) return refuse('not-removable', refused?.output ?? `\`codex mcp remove\` refuses the name "${ref.name}".`)
   const ran = await runMcpCli(deps, ['mcp', 'remove', ref.name], versions)
   if (!('backup' in ran)) return ran
   if (await serverPresent(deps, ref.name)) return refuse('cli-failed', `codex mcp remove ran, but "${ref.name}" is still in ~/.codex/config.toml.`)

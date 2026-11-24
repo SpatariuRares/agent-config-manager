@@ -147,3 +147,24 @@ test('a broken extension manifest or enablement file is a problem, not a failure
   assert.ok(view.problems.some((problem) => problem.startsWith(`${ENABLEMENT}:`)), view.problems.join('\n'))
   assert.equal(itemOf(view, 'plugins', 'obsidian').plugin?.enabled, true, 'no rules: enabled everywhere')
 })
+
+test('B1: a malformed settings, projects or MCP enablement file is reported without quoting its content', async () => {
+  const leaky = '// a comment that shifts nothing\n{ "mcpServers": { "x": { "args": ["ghp_SECRETVALUE123"] '
+  const broken = { ...files(), [USER_SETTINGS]: leaky, [`${GEMINI}/projects.json`]: '{"projects": ghp_SECRETVALUE123', [MCP_ENABLEMENT]: '{ SECRET' }
+  const view = await viewOf(machine({ files: broken }).deps)
+  for (const file of [USER_SETTINGS, `${GEMINI}/projects.json`, MCP_ENABLEMENT]) {
+    const problem = view.problems.find((line) => line.startsWith(`${file}:`))
+    assert.ok(problem, `${file} in ${view.problems.join('\n')}`)
+    assert.match(problem, /not valid JSON/)
+  }
+  assert.doesNotMatch(view.problems.join('\n'), /ghp_|SECRET/)
+})
+
+test('A4: a project that is a link to the home folder is not a project, so global items are not listed twice', async () => {
+  const fixture = { ...files(), [`${GEMINI}/projects.json`]: JSON.stringify({ projects: { [SHOP]: 'shop', '/link': 'me' } }) }
+  const m = machine({ files: fixture })
+  m.fs.links['/link'] = HOME
+  const view = await viewOf(m.deps)
+  assert.deepEqual(view.projects, [SHOP])
+  assert.ok(!view.items.some((item) => item.project === '/link'))
+})

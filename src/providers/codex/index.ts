@@ -31,11 +31,14 @@
 // - config.toml: never written here. smol-toml cannot keep comments and formatting, and restoring a backup would
 //   also be a write, so a restore of a config.toml backup is refused with the command to do it by hand.
 // - MCP: user servers are removed with `codex mcp remove NAME`; a project server is copied to the user config with
-//   `codex mcp add NAME -- COMMAND ARGS...` only when that recreates it exactly (stdio, command and args only).
+//   `codex mcp add NAME -- COMMAND ARGS...` only when that recreates it exactly (stdio, command and args only)
+//   and its command line holds nothing secret-looking (argv is visible to other programs).
 //   Both back up config.toml first and refuse a stale view. The view reads config.toml itself, not
 //   `codex mcp list --json`: the file is exactly what `codex mcp remove` edits, reading it runs no process, and the
 //   CLI output would carry secrets (http_headers) and auth state into the panel.
 // - Skills and agent files: moved, copied and trashed through the toolkit (whole files and folders, no TOML edits).
+//   Skills in ~/.agents/skills and <project>/.agents/skills are read-only: Gemini CLI and Copilot CLI read those
+//   folders too. Moves land in ~/.codex/skills or <project>/.codex/skills.
 // - Plugins and hooks: read-only (see NOTE).
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
@@ -62,7 +65,9 @@ export const CODEX_NOTE =
   'Plugins and hooks are read-only: Codex has no command to turn a plugin on or off, and editing hooks.json changes ' +
   'the hashes Codex trusts hooks by, so it would skip them until you review them again in /hooks. ' +
   '~/.codex/config.toml is never rewritten here: MCP servers are removed with `codex mcp remove`, and a project ' +
-  'server can only be copied to global with `codex mcp add` (stdio servers with just a command and args). ' +
+  'server can only be copied to global with `codex mcp add` (stdio servers with just a command and args, and no secret on that command line). ' +
+  'Skills in ~/.agents/skills and <project>/.agents/skills are read-only, because other agents (Gemini CLI, Copilot CLI) read them too; ' +
+  'a skill moved into a project goes to <project>/.codex/skills. ' +
   'Project .codex/config.toml files, [agents] roles and AGENTS.md are read-only.'
 
 export function codexProvider(): AgentProvider {

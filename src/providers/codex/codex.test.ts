@@ -5,7 +5,7 @@ import type { Action, ActionResult, Item, View } from '../../adapters/view.ts'
 import { routeAction, routeView } from '../router.ts'
 import { fakeExec, fakeFs, providerContract } from '../testing.ts'
 import { itemKey, type ProviderDeps } from '../types.ts'
-import { CODEX_SUPPORTS, codexProvider } from './index.ts'
+import { CODEX_PROJECT_SCOPES, CODEX_SUPPORTS, codexProvider } from './index.ts'
 
 const HOME = '/home'
 const CONFIG = '/home/.codex/config.toml'
@@ -159,7 +159,7 @@ test('Codex info: id, name, config home, all five classes, what works, and a not
   const info = await provider.info(machine().deps)
   assert.deepEqual(
     { ...info, note: undefined },
-    { id: 'codex', name: 'Codex', detected: true, kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'], supports: CODEX_SUPPORTS, configHome: '~/.codex', note: undefined }
+    { id: 'codex', name: 'Codex', detected: true, kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'], supports: CODEX_SUPPORTS, projectScopes: CODEX_PROJECT_SCOPES, configHome: '~/.codex', note: undefined }
   )
   assert.match(info.note ?? '', /Plugins and hooks are read-only/)
   assert.equal(info.supports.plugins, undefined)
@@ -369,12 +369,12 @@ test('config.toml is never written by the app, whatever it runs', async () => {
   assert.equal(m.fs.files[`${SHOP}/.codex/config.toml`], FILES[`${SHOP}/.codex/config.toml`])
 })
 
-test('a skill moves to a project .agents/skills and back; a removed one is restored from the trash', async () => {
+test('a skill moves to a project .codex/skills and back; a removed one is restored from the trash', async () => {
   const m = machine()
   let view = await viewOf(m.deps)
   const moved = await act(m.deps, view, { type: 'move', key: named(view, 'skills', 'review').key, to: { project: SHOP }, copy: false })
   assert.equal(moved.result.ok, true, moved.result.message)
-  assert.ok(`${SHOP}/.agents/skills/review/SKILL.md` in m.fs.files)
+  assert.ok(`${SHOP}/.codex/skills/review/SKILL.md` in m.fs.files)
   assert.ok(!('/home/.codex/skills/review/SKILL.md' in m.fs.files))
   view = (moved.view as { ok: true; view: View }).view
   const back = await act(m.deps, view, (moved.result as ActionResult & { ok: true }).undo!)
@@ -400,4 +400,82 @@ test('an agent file named by an [agents.<role>] config_file is neither moved nor
   const moved = await act(m.deps, view, { type: 'move', key, to: { project: SHOP }, copy: false })
   assert.equal((moved.result as ActionResult & { ok: false }).reason, 'not-movable')
   assert.deepEqual(m.writes, [])
+})
+
+// ---- Regressions from the T3 verifier (B2, B3, A4, A5) and the command-line secret rule.
+
+const PROBE_TOML = `${CONFIG_TOML}
+[mcp_servers.probe]
+command = "npx"
+args = ["srv", "--api-key", "sk-live-SECRET1234567890"]
+
+[mcp_servers.probe-url]
+url = "https://x.io/mcp?token=abc123tok"
+`
+const PROBE_HOOKS = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: "curl -H 'Authorization: Bearer hunter2' https://x.io/done" }] }] } })
+
+test('B2: MCP args, MCP URLs and hook commands are shown without their secrets', async () => {
+  const view = await viewOf(machine({ files: { ...FILES, [CONFIG]: PROBE_TOML, [HOOKS]: PROBE_HOOKS } }).deps)
+  assert.doesNotMatch(JSON.stringify(view.items), /sk-live|abc123tok|hunter2/)
+  assert.equal(named(view, 'mcp', 'probe').mcp?.target, 'npx srv --api-key <redacted>')
+  assert.equal(named(view, 'mcp', 'probe-url').mcp?.target, 'https://x.io/mcp?token=<redacted>')
+  const hook = view.items.find((item) => item.kind === 'hooks' && item.hook?.event === 'Stop')!
+  assert.equal(hook.hook?.command, "curl -H 'Authorization: <redacted>' https://x.io/done")
+})
+
+test('a project server with a secret in its args is never put on a codex command line', async () => {
+  const project = `${FILES[`${SHOP}/.codex/config.toml`]}\n[mcp_servers.leaky]\ncommand = "srv"\nargs = ["--token", "sk-live-SECRET1234567890"]\n`
+  const m = machine({ files: { ...FILES, [`${SHOP}/.codex/config.toml`]: project } })
+  const view = await viewOf(m.deps)
+  const leaky = named(view, 'mcp', 'leaky', SHOP)
+  assert.equal(leaky.movable, false)
+  const copied = await act(m.deps, view, { type: 'move', key: leaky.key, to: { project: null }, copy: true })
+  assert.equal((copied.result as ActionResult & { ok: false }).reason, 'not-movable')
+  assert.doesNotMatch(JSON.stringify(copied.result), /sk-live/)
+  assert.deepEqual(m.exec.calls, [])
+})
+
+test('B3: skills in ~/.agents/skills and <project>/.agents/skills are read-only, other agents read them too', async () => {
+  const m = machine()
+  const view = await viewOf(m.deps)
+  for (const item of [named(view, 'skills', 'notes'), named(view, 'skills', 'deploy', SHOP)]) {
+    assert.equal(item.movable, false, item.name)
+    assert.equal(item.removable, false, item.name)
+    assert.match(item.notMovableReason ?? '', /other agents/)
+    const removed = await act(m.deps, view, { type: 'remove', key: item.key })
+    assert.equal((removed.result as ActionResult & { ok: false }).reason, 'not-removable')
+    const moved = await act(m.deps, view, { type: 'move', key: item.key, to: { project: item.project === null ? SHOP : null }, copy: true })
+    assert.equal((moved.result as ActionResult & { ok: false }).reason, 'not-movable')
+  }
+  assert.ok('/home/.agents/skills/notes/SKILL.md' in m.fs.files)
+  assert.ok(`${SHOP}/.agents/skills/deploy/SKILL.md` in m.fs.files)
+  assert.deepEqual(m.writes, [])
+})
+
+test('B3: a skill moved into a project lands in <project>/.codex/skills, never in .agents/skills', async () => {
+  const m = machine()
+  const view = await viewOf(m.deps)
+  const moved = await act(m.deps, view, { type: 'move', key: named(view, 'skills', 'review').key, to: { project: SHOP }, copy: true })
+  assert.equal(moved.result.ok, true, moved.result.message)
+  assert.ok(`${SHOP}/.codex/skills/review/SKILL.md` in m.fs.files)
+  assert.ok(!(`${SHOP}/.agents/skills/review/SKILL.md` in m.fs.files))
+})
+
+test('A4: a project that is a link to the home folder is not a project, so nothing is listed twice or copied into home', async () => {
+  const config = `${CONFIG_TOML}\n[projects."/link"]\ntrust_level = "trusted"\n`.replace('[hooks.state', '[projects."/link2"]\ntrust_level = "trusted"\n\n[hooks.state')
+  const fs = fakeFs({ ...structuredClone(FILES), [CONFIG]: config }, { '/link': HOME, '/link2': '/home/.codex' })
+  const deps: ProviderDeps = { fs, exec: fakeExec({ commands: COMMANDS }), home: HOME, clock: CLOCK }
+  const view = await viewOf(deps)
+  assert.deepEqual(view.projects, [SHOP])
+  assert.ok(!view.items.some((item) => item.project === '/link' || item.project === '/link2'))
+})
+
+test('A5: a server whose name looks like an option is shown as not removable, as the action refuses it', async () => {
+  const m = machine({ files: { ...FILES, [CONFIG]: `${CONFIG_TOML}\n[mcp_servers."-x"]\ncommand = "x"\n` } })
+  const view = await viewOf(m.deps)
+  const item = named(view, 'mcp', '-x')
+  assert.equal(item.removable, false)
+  const removed = await act(m.deps, view, { type: 'remove', key: item.key })
+  assert.equal(removed.result.ok, false)
+  assert.deepEqual(m.exec.calls, [])
 })
