@@ -14,3 +14,9 @@ export interface ClaudePaths {
   /** Usually ~/.claude.json */
   userConfigFile: string
 }
+
+/** The official `claude` CLI, for operations Claude Code owns (installing and removing plugin files). */
+export interface PluginCli {
+  /** Runs `claude plugin uninstall`; `cwd` is the project folder for a project or local install. */
+  uninstall(id: string, scope: string, cwd: string | null): Promise<{ ok: boolean; output: string }>
+}

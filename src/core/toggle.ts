@@ -134,7 +134,7 @@ async function replace(fs: FileSystem, paths: ClaudePaths, file: string, previou
   return { ok: true, backup } as const
 }
 
-async function backUp(fs: FileSystem, paths: ClaudePaths, file: string, text: string, clock: Clock): Promise<string> {
+export async function backUp(fs: FileSystem, paths: ClaudePaths, file: string, text: string, clock: Clock): Promise<string> {
   const slug = file === settingsFile(paths) ? 'settings' : encodeURIComponent(file)
   const stamp = clock().toISOString().replace(/[:.]/g, '-')
   // Two writes in the same millisecond must not share a backup name.

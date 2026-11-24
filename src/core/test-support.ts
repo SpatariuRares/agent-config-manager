@@ -1,5 +1,5 @@
 // Shared test doubles for the core.
-import type { FileSystem } from './ports.ts'
+import type { FileSystem, PluginCli } from './ports.ts'
 
 export const paths = { claudeDir: '/home/.claude', userConfigFile: '/home/.claude.json' }
 
@@ -19,6 +19,18 @@ export function fakeFs(files: Record<string, string>): FileSystem & { files: Rec
         .filter((path) => path.startsWith(prefix))
         .map((path) => path.slice(prefix.length).split('/')[0])
       return [...new Set(names)].sort()
+    }
+  }
+}
+
+/** A PluginCli that records its calls and fails for the scopes listed in `failing`. */
+export function fakeCli(failing: string[] = []): PluginCli & { calls: string[] } {
+  const calls: string[] = []
+  return {
+    calls,
+    async uninstall(id, scope, cwd) {
+      calls.push(`${id} ${scope} ${cwd ?? '-'}`)
+      return failing.includes(scope) ? { ok: false, output: `cannot uninstall from ${scope}` } : { ok: true, output: '' }
     }
   }
 }
