@@ -29,3 +29,4 @@ Branch: feat/release-prep · Tests: `npm test`, `npm run typecheck`, `npm run te
 ## Log
 
 - L1 (2026-11-25) User asked to fix the four open points, make the repository public and create a Reddit post.
+- L2 Personal data scrubbed from the current feature logs (24617d0). User chose to rewrite history before going public: mirror backup first, then remove local paths and private project names from every commit and set the GitHub noreply email as author, then force-push main. Done last, after this branch merges.
