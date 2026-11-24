@@ -105,3 +105,11 @@ test('reads multi-line YAML descriptions (>, >-, |) as one line of text', async 
     ['Spans two lines.', 'First line. Second line.']
   )
 })
+
+test('a malformed MCP entry is skipped instead of breaking the inventory', async () => {
+  const { mcpServers } = await readInventory(
+    fakeFs({ '/home/.claude.json': JSON.stringify({ mcpServers: { broken: null, ok: { command: 'x' } } }) }),
+    paths
+  )
+  assert.deepEqual(mcpServers, [{ name: 'ok', transport: 'stdio', target: 'x' }])
+})

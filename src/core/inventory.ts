@@ -285,11 +285,13 @@ async function readAgents(fs: FileSystem, dir: string): Promise<Agent[]> {
 
 function readMcpServers(userConfig: Json): McpServer[] {
   return sortByName(
-    Object.entries(userConfig.mcpServers ?? {}).map(([name, server]: [string, Json]) => ({
-      name,
-      transport: server.type ?? (server.url ? 'http' : 'stdio'),
-      target: server.url ?? [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')
-    }))
+    Object.entries(isObject(userConfig.mcpServers) ? userConfig.mcpServers : {})
+      .filter((entry): entry is [string, Json] => isObject(entry[1]))
+      .map(([name, server]) => ({
+        name,
+        transport: server.type ?? (server.url ? 'http' : 'stdio'),
+        target: server.url ?? [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(' ')
+      }))
   )
 }
 
