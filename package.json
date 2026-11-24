@@ -1,0 +1,13 @@
+{
+  "name": "claude-config-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "See and manage your Claude Code setup: plugins, skills, agents, MCP servers and hooks.",
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "test": "node --test 'src/**/*.test.ts'"
+  }
+}

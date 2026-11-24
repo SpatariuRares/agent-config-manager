@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 2,
+  "id": "claude-config-manager",
+  "name": "Claude Config Manager",
+  "version": "0.1.0",
+  "description": "See your Claude Code setup in one place: plugins, skills, agents, MCP servers and hooks.",
+  "engines": {
+    "orca": ">=1.4.246"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/adapters/orca/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "claude-config",
+        "title": "Claude Config",
+        "icon": "blocks",
+        "entry": "src/adapters/orca/panel.tsx",
+        "ui": "components"
+      }
+    ]
+  },
+  "capabilities": []
+}
