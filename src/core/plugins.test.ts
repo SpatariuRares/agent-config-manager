@@ -99,3 +99,26 @@ test('reads components declared by custom paths in plugin.json, on top of the de
     mcpServers: ['browser', 'docs']
   })
 })
+
+test('a malformed or escaping plugin.json gives empty contributions, not a crash', async () => {
+  const fs = fakeFs({
+    '/home/.claude/settings.json': JSON.stringify({ enabledPlugins: { 'odd@m': true, 'null@m': true, 'ok@m': true } }),
+    '/home/.claude/plugins/installed_plugins.json': JSON.stringify({
+      plugins: { 'odd@m': install('/cache/odd', '1'), 'null@m': install('/cache/null', '1'), 'ok@m': install('/cache/ok', '1') }
+    }),
+    '/cache/odd/.claude-plugin/plugin.json': JSON.stringify({
+      skills: [1, null, '../../outside'],
+      agents: '/etc',
+      mcpServers: ['x'],
+      hooks: { hooks: null }
+    }),
+    '/outside/leaked/SKILL.md': '---\nname: leaked\n---\n',
+    '/cache/null/.claude-plugin/plugin.json': 'null',
+    '/cache/ok/agents/a.md': '---\nname: a\n---\n'
+  })
+  const { plugins } = await readInventory(fs, paths)
+  const empty = { skills: [], agents: [], commands: [], hooks: [], mcpServers: [] }
+  assert.deepEqual(plugins.find((p) => p.id === 'odd@m')?.contributes, empty)
+  assert.deepEqual(plugins.find((p) => p.id === 'null@m')?.contributes, empty)
+  assert.deepEqual(plugins.find((p) => p.id === 'ok@m')?.contributes.agents, ['a'])
+})

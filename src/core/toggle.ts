@@ -4,7 +4,8 @@ import { settingsFile, versionOf } from './inventory.ts'
 import type { ClaudePaths, FileSystem } from './ports.ts'
 
 export type WriteResult =
-  | { ok: true; backup: string }
+  /** `backup` is null when nothing needed writing. */
+  | { ok: true; backup: string | null }
   | { ok: false; reason: 'changed' | 'unknown-plugin' | 'unreadable' | 'unknown-backup'; message: string }
 
 export interface PluginToggle {
@@ -14,7 +15,15 @@ export interface PluginToggle {
   settingsVersion: string
 }
 
+export interface BackupRestore {
+  name: string
+  /** The `settingsVersion` of the inventory the caller showed. */
+  settingsVersion: string
+}
+
 export type Clock = () => Date
+
+const CHANGED = { ok: false, reason: 'changed', message: 'settings.json changed since it was read. Refresh and try again.' } as const
 
 const backupDir = (paths: ClaudePaths) => `${paths.claudeDir}/backups/claude-config-manager`
 const BACKUP_NAME = /^settings\.[0-9TZ-]+\.json$/
@@ -26,9 +35,7 @@ export async function setPluginEnabled(
   clock: Clock = () => new Date()
 ): Promise<WriteResult> {
   const text = await fs.readText(settingsFile(paths))
-  if (versionOf(text) !== change.settingsVersion) {
-    return { ok: false, reason: 'changed', message: 'settings.json changed since it was read. Refresh and try again.' }
-  }
+  if (versionOf(text) !== change.settingsVersion) return CHANGED
   let settings: Record<string, any>
   try {
     settings = JSON.parse(text ?? '')
@@ -38,6 +45,7 @@ export async function setPluginEnabled(
   if (!Object.hasOwn(settings.enabledPlugins ?? {}, change.id)) {
     return { ok: false, reason: 'unknown-plugin', message: `${change.id} is not in enabledPlugins.` }
   }
+  if (settings.enabledPlugins[change.id] === change.enabled) return { ok: true, backup: null }
   settings.enabledPlugins[change.id] = change.enabled
   const backup = await backUp(fs, paths, text ?? '', clock)
   await fs.writeText(settingsFile(paths), JSON.stringify(settings, null, 2) + '\n')
@@ -53,18 +61,27 @@ export async function listBackups(fs: FileSystem, paths: ClaudePaths): Promise<s
 export async function restoreBackup(
   fs: FileSystem,
   paths: ClaudePaths,
-  name: string,
+  restore: BackupRestore,
   clock: Clock = () => new Date()
 ): Promise<WriteResult> {
+  const { name } = restore
   const text = (await listBackups(fs, paths)).includes(name) ? await fs.readText(`${backupDir(paths)}/${name}`) : null
   if (text === null) return { ok: false, reason: 'unknown-backup', message: `${name} is not a known backup.` }
-  const backup = await backUp(fs, paths, (await fs.readText(settingsFile(paths))) ?? '', clock)
+  const current = await fs.readText(settingsFile(paths))
+  if (versionOf(current) !== restore.settingsVersion) return CHANGED
+  const backup = await backUp(fs, paths, current ?? '', clock)
   await fs.writeText(settingsFile(paths), text)
   return { ok: true, backup }
 }
 
 async function backUp(fs: FileSystem, paths: ClaudePaths, text: string, clock: Clock): Promise<string> {
-  const path = `${backupDir(paths)}/settings.${clock().toISOString().replace(/[:.]/g, '-')}.json`
-  await fs.writeText(path, text)
-  return path
+  const stamp = clock().toISOString().replace(/[:.]/g, '-')
+  // Two writes in the same millisecond must not share a backup name.
+  for (let n = 0; ; n++) {
+    const path = `${backupDir(paths)}/settings.${stamp}${n === 0 ? '' : `-${n}`}.json`
+    if ((await fs.readText(path)) === null) {
+      await fs.writeText(path, text)
+      return path
+    }
+  }
 }

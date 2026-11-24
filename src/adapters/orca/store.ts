@@ -36,10 +36,12 @@ export async function togglePlugin(id: string, enabled: boolean): Promise<void> 
 }
 
 export async function restore(name: string): Promise<void> {
-  if (read(busy) !== null) return
+  const current = read(answer)
+  if (read(busy) !== null || current === null || !current.ok) return
   set(busy, 'restore')
   try {
-    show(await plugin.request('backup.restore', { name }), { title: `Restored ${name}`, text: APPLIES })
+    const settingsVersion = current.inventory.settingsVersion
+    show(await plugin.request('backup.restore', { name, settingsVersion }), { title: `Restored ${name}`, text: APPLIES })
   } finally {
     set(busy, null)
   }
@@ -52,7 +54,9 @@ function show(write: WriteAnswer, success: { title: string; text: string }): voi
   set(
     notice,
     result.ok
-      ? { tone: 'success', ...success, undo: nameOf(result.backup) }
+      ? result.backup === null
+        ? { tone: 'success', title: 'Already set', text: 'Nothing needed changing.' }
+        : { tone: 'success', ...success, undo: nameOf(result.backup) }
       : { tone: result.reason === 'changed' ? 'warning' : 'danger', title: 'Nothing was changed', text: result.message }
   )
 }

@@ -16,6 +16,6 @@ declare module 'orca' {
     /** Backup file names, newest first. */
     'backups.list': { output: string[] }
     /** Puts one backup back as settings.json, backing up the current file first. */
-    'backup.restore': { input: { name: string }; output: WriteAnswer }
+    'backup.restore': { input: { name: string; settingsVersion: string }; output: WriteAnswer }
   }
 }

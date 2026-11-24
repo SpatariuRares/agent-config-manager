@@ -91,7 +91,10 @@ async function readJson(fs: FileSystem, path: string, problems: string[]): Promi
   const text = await fs.readText(path)
   if (text === null) return {}
   try {
-    return JSON.parse(text)
+    const value = JSON.parse(text)
+    if (isObject(value)) return value
+    problems.push(`${path}: expected a JSON object`)
+    return {}
   } catch (error) {
     problems.push(`${path}: ${(error as Error).message}`)
     return {}
@@ -123,27 +126,32 @@ async function readPlugins(fs: FileSystem, settings: Json, installed: Json, prob
 async function readContributions(fs: FileSystem, root: string, problems: string[]): Promise<PluginContributions> {
   const manifest = await readJson(fs, `${root}/.claude-plugin/plugin.json`, problems)
   // plugin.json may point at extra component paths (a string or a list); they add to the default folders.
+  // Only paths inside the plugin folder count: no absolute paths, no `..`.
+  const inside = (path: unknown): path is string =>
+    typeof path === 'string' && !path.startsWith('/') && !path.split('/').includes('..')
+  const resolve = (path: string) => `${root}/${path.replace(/^\.\//, '').replace(/\/$/, '')}`
   const at = (key: string, fallback: string): string[] => {
     const value = manifest[key]
-    const declared: string[] = typeof value === 'string' ? [value] : Array.isArray(value) ? value : []
-    return [fallback, ...declared].map((path) => `${root}/${path.replace(/^\.\//, '').replace(/\/$/, '')}`)
+    const declared: unknown[] = Array.isArray(value) ? value : [value]
+    return [fallback, ...declared.filter(inside)].map(resolve)
   }
   const inline = async (key: string, file: string): Promise<Json> => {
     const value = manifest[key]
-    if (typeof value === 'object' && value !== null) return value
-    return readJson(fs, `${root}/${typeof value === 'string' ? value.replace(/^\.\//, '') : file}`, problems)
+    if (isObject(value)) return value
+    return readJson(fs, resolve(inside(value) ? value : file), problems)
   }
   const hooksFile = await inline('hooks', 'hooks/hooks.json')
   const mcpFile = await inline('mcpServers', '.mcp.json')
-  const mcpDefault = typeof manifest.mcpServers === 'object' ? await readJson(fs, `${root}/.mcp.json`, problems) : {}
+  const mcpDefault = isObject(manifest.mcpServers) ? await readJson(fs, `${root}/.mcp.json`, problems) : {}
+  const keysOf = (value: unknown) => (isObject(value) ? Object.keys(value) : [])
 
   return {
     skills: unique(await skillNames(fs, at('skills', 'skills'))),
     agents: unique((await markdownFiles(fs, at('agents', 'agents'))).map(({ name, path, text }) => describe(name, path, text).name)),
     commands: unique((await markdownFiles(fs, at('commands', 'commands'))).map(({ name }) => name)),
-    hooks: unique(Object.keys(hooksFile.hooks ?? hooksFile).filter((key) => key !== 'description')),
+    hooks: unique(keysOf('hooks' in hooksFile ? hooksFile.hooks : hooksFile).filter((key) => key !== 'description')),
     // .mcp.json is written both with and without the mcpServers wrapper.
-    mcpServers: unique([mcpFile, mcpDefault].flatMap((file) => Object.keys(file.mcpServers ?? file)))
+    mcpServers: unique([mcpFile, mcpDefault].flatMap((file) => keysOf('mcpServers' in file ? file.mcpServers : file)))
   }
 }
 
@@ -171,6 +179,10 @@ async function markdownFiles(fs: FileSystem, paths: string[]): Promise<{ name: s
     }
   }
   return files
+}
+
+function isObject(value: unknown): value is Json {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function unique(values: string[]): string[] {

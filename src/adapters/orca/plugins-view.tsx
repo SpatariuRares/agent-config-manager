@@ -38,7 +38,7 @@ function PluginCard({ plugin }: { plugin: Plugin }) {
           })}
         </Row>
         {plugin.sharesNameWith.length > 0 && (
-          <Text tone="warning" size="xs">{`Also installed from ${plugin.sharesNameWith.map((id) => id.split('@')[1]).join(', ')}`}</Text>
+          <Text tone="warning" size="xs">{`Also installed from ${plugin.sharesNameWith.map((id) => id.slice(id.lastIndexOf('@') + 1)).join(', ')}`}</Text>
         )}
         {kinds.length > 0 && (
           <Collapsible title="Contents">

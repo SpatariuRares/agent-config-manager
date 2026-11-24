@@ -1,5 +1,6 @@
 // FileSystem port over node:fs, shared by the Orca worker and the future localhost server.
-import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { chmod, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ClaudePaths, FileSystem } from '../core/ports.ts'
@@ -30,10 +31,13 @@ export const nodeFileSystem: FileSystem = {
     // Write through a symlink (dotfiles setups) instead of replacing the link with a plain file.
     const target = await realpath(path).catch((error) => (isMissing(error) ? path : Promise.reject(error)))
     await mkdir(dirname(target), { recursive: true })
+    // Keep the replaced file's permissions (settings can hold secrets in `env`).
+    const mode = await stat(target).then((info) => info.mode & 0o777, () => null)
     // Write a sibling temp file, then rename over the target: readers never see half a file.
-    const temp = `${target}.${process.pid}.${Date.now()}.tmp`
+    const temp = `${target}.${randomUUID()}.tmp`
     try {
-      await writeFile(temp, text, { encoding: 'utf8', flag: 'wx' })
+      await writeFile(temp, text, { encoding: 'utf8', flag: 'wx', mode: mode ?? 0o600 })
+      if (mode !== null) await chmod(temp, mode)
       await rename(temp, target)
     } catch (error) {
       await rm(temp, { force: true })
