@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { fakeFs } from '../../core/test-support.ts'
 import { fakeExec } from '../../providers/testing.ts'
+import { PROVIDERS } from '../../providers/registry.ts'
 import { createConfigServer } from './server.ts'
 
 const TOKEN = 'test-token-0123456789'
@@ -153,7 +154,11 @@ test('view.get answers for the agent it names, with every agent for the switcher
   const body = await (await api('view.get', { body: JSON.stringify({ agent: 'claude' }) })).json()
   assert.equal(body.ok, true)
   assert.equal(body.view.agent, 'claude')
-  assert.deepEqual(body.view.agents.map((a: { id: string; detected: boolean }) => [a.id, a.detected]), [['claude', true]])
+  // Only Claude Code's files exist in this fake home; the other agents are listed but not detected.
+  assert.deepEqual(
+    body.view.agents.map((a: { id: string; detected: boolean }) => [a.id, a.detected]),
+    PROVIDERS.map((p) => [p.id, p.id === 'claude'])
+  )
   assert.ok(body.view.items.every((i: { agent: string }) => i.agent === 'claude'))
   assert.deepEqual(await (await api('view.get', { body: JSON.stringify({ agent: 'nope' }) })).json(), { ok: false, error: 'Unknown agent "nope".' })
 })

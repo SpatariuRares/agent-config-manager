@@ -1,12 +1,14 @@
 // Every agent this app manages, in switcher order. Adding an agent is one line here.
 import { claudeProvider } from './claude/index.ts'
 import { codexProvider } from './codex/index.ts'
+import { copilotProvider } from './copilot/index.ts'
 import { assertUniqueIds, lookupProvider, type ProviderLookup } from './router.ts'
 import type { AgentProvider } from './types.ts'
 
 export const PROVIDERS: readonly AgentProvider[] = Object.freeze([
   claudeProvider(),
-  codexProvider()
+  codexProvider(),
+  copilotProvider()
 ])
 
 assertUniqueIds(PROVIDERS)
