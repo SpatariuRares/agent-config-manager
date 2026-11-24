@@ -50,13 +50,16 @@ export interface Inventory {
   hooks: Hook[]
   /** Files that exist but could not be read; the rest of the inventory still loads. */
   problems: string[]
+  /** Identifies the settings.json content this inventory was read from; '' when the file is missing. */
+  settingsVersion: string
 }
 
 type Json = Record<string, any>
 
 export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise<Inventory> {
   const problems: string[] = []
-  const settings = await readJson(fs, `${paths.claudeDir}/settings.json`, problems)
+  const settingsText = await fs.readText(settingsFile(paths))
+  const settings = await readJson(fs, settingsFile(paths), problems)
   const userConfig = await readJson(fs, paths.userConfigFile, problems)
   const installed = await readJson(fs, `${paths.claudeDir}/plugins/installed_plugins.json`, problems)
 
@@ -66,8 +69,22 @@ export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise
     agents: await readAgents(fs, `${paths.claudeDir}/agents`),
     mcpServers: readMcpServers(userConfig),
     hooks: readHooks(settings),
-    problems
+    problems,
+    settingsVersion: versionOf(settingsText)
   }
+}
+
+export const settingsFile = (paths: ClaudePaths) => `${paths.claudeDir}/settings.json`
+
+/** FNV-1a of the file text: cheap, stable, and enough to notice that the file changed. */
+export function versionOf(text: string | null): string {
+  if (text === null) return ''
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${text.length}-${hash.toString(16)}`
 }
 
 async function readJson(fs: FileSystem, path: string, problems: string[]): Promise<Json> {

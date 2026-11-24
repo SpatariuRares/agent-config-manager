@@ -76,7 +76,7 @@ test('flattens hooks into one row per command, keeping event and matcher', async
 
 test('an empty setup reads as an empty inventory, not an error', async () => {
   const inventory = await readInventory(fakeFs({}), paths)
-  assert.deepEqual(inventory, { plugins: [], skills: [], agents: [], mcpServers: [], hooks: [], problems: [] })
+  assert.deepEqual(inventory, { plugins: [], skills: [], agents: [], mcpServers: [], hooks: [], problems: [], settingsVersion: '' })
 })
 
 test('a broken settings file is reported as a problem, the rest still loads', async () => {

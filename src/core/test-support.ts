@@ -10,6 +10,9 @@ export function fakeFs(files: Record<string, string>): FileSystem & { files: Rec
     async readText(path) {
       return files[path] ?? null
     },
+    async writeText(path, text) {
+      files[path] = text
+    },
     async listEntries(dir) {
       const prefix = `${dir}/`
       const names = Object.keys(files)

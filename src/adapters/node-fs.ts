@@ -1,7 +1,7 @@
 // FileSystem port over node:fs, shared by the Orca worker and the future localhost server.
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ClaudePaths, FileSystem } from '../core/ports.ts'
 
 const isMissing = (error: unknown) => {
@@ -23,6 +23,20 @@ export const nodeFileSystem: FileSystem = {
       return (await readdir(dir)).filter((name) => !name.startsWith('.')).sort()
     } catch (error) {
       if (isMissing(error)) return []
+      throw error
+    }
+  },
+  async writeText(path, text) {
+    // Write through a symlink (dotfiles setups) instead of replacing the link with a plain file.
+    const target = await realpath(path).catch((error) => (isMissing(error) ? path : Promise.reject(error)))
+    await mkdir(dirname(target), { recursive: true })
+    // Write a sibling temp file, then rename over the target: readers never see half a file.
+    const temp = `${target}.${process.pid}.${Date.now()}.tmp`
+    try {
+      await writeFile(temp, text, { encoding: 'utf8', flag: 'wx' })
+      await rename(temp, target)
+    } catch (error) {
+      await rm(temp, { force: true })
       throw error
     }
   }

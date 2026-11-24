@@ -4,6 +4,8 @@ export interface FileSystem {
   readText(path: string): Promise<string | null>
   /** Entry names directly inside a directory, or [] when it does not exist. */
   listEntries(dir: string): Promise<string[]>
+  /** Replaces the file in one step (no half-written file), creating missing folders. */
+  writeText(path: string, text: string): Promise<void>
 }
 
 export interface ClaudePaths {
