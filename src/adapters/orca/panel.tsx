@@ -85,7 +85,7 @@ function Section({ inv }: { inv: Inventory }) {
         />
       )
     default:
-      return <PluginsView plugins={inv.plugins} />
+      return <PluginsView plugins={inv.plugins} projects={inv.projects} />
   }
 }
 
@@ -116,12 +116,12 @@ function Backups() {
   return (
     <Collapsible title="Backups" description={`${names.length} in ~/.claude/backups/claude-config-manager`}>
       {names.length === 0 ? (
-        <Text muted size="xs">A backup of settings.json is saved before every change.</Text>
+        <Text muted size="xs">A backup of each settings file is saved before every change.</Text>
       ) : (
         <List>
-          {names.slice(0, 10).map((name) => (
-            <ListItem key={name} title={name}>
-              <Button size="sm" variant="ghost" disabled={read(busy) !== null} onPress={() => restore(name)}>
+          {names.slice(0, 10).map((entry) => (
+            <ListItem key={entry.name} title={entry.target} description={entry.name.replace(/^.*\.(\d{4}-[^.]+)\.json$/, '$1')}>
+              <Button size="sm" variant="ghost" disabled={read(busy) !== null} onPress={() => restore(entry)}>
                 Restore
               </Button>
             </ListItem>
