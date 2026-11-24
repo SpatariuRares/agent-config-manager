@@ -150,6 +150,12 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
     assert.deepEqual(exec.calls, [], 'info() ran a command')
   })
 
+  test(`${name}: the view is plain JSON (Orca refuses undefined, functions and class instances)`, async () => {
+    const { deps } = machine()
+    const view = await provider.buildView(deps)
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(view)), view)
+  })
+
   test(`${name}: view items carry the agent id, a declared kind and a unique key starting with the kind`, async () => {
     const { deps } = machine()
     const info = await provider.info(deps)

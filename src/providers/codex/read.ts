@@ -199,7 +199,7 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
             scope,
             source: skill.path,
             movable,
-            notMovableReason: reason,
+            ...(reason === undefined ? {} : { notMovableReason: reason }),
             removable: !shared
           },
           { kind: 'skills', entry: skill, file: skill.path, project, movable, removable: !shared, reason }
@@ -234,7 +234,7 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
           scope,
           source: file,
           movable: reason === undefined,
-          notMovableReason: reason,
+          ...(reason === undefined ? {} : { notMovableReason: reason }),
           removable: by === undefined
         },
         {
