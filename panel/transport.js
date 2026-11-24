@@ -18,22 +18,36 @@ function orcaBackend(orca) {
 }
 
 /**
- * Seam for the localhost server (not built yet): the same requests as JSON over HTTP.
- * Wire it in createTransport once the server exists, e.g. when the page is served from it.
+ * The localhost server (src/adapters/http): the same requests as JSON over HTTP, each carrying the
+ * session token the server printed in the page's URL fragment.
  */
-export function httpBackend(baseUrl) {
+export function httpBackend(baseUrl, token) {
   return {
     mode: 'http',
     async request(name, input) {
       const response = await fetch(new URL(`api/${encodeURIComponent(name)}`, baseUrl), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-ccm-token': token },
         body: JSON.stringify(input ?? {}),
       })
+      if (response.status === 403) {
+        throw Object.assign(new Error('The server refused this page. Open the link the server printed.'), { code: 'forbidden' })
+      }
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { code: 'http_error' })
       return response.json()
     },
     onTheme: () => undefined,
+  }
+}
+
+/** The token from `#token=…`, kept for this tab so a reload still works; null when there is none. */
+function sessionToken(hash) {
+  const fromHash = new URLSearchParams(hash.replace(/^#/, '')).get('token')
+  try {
+    if (fromHash) sessionStorage.setItem('ccm-token', fromHash)
+    return fromHash || sessionStorage.getItem('ccm-token')
+  } catch {
+    return fromHash
   }
 }
 
@@ -57,9 +71,17 @@ function describe(error) {
   return HINTS[code] ? `${HINTS[code]} (${code})` : text
 }
 
-export function createTransport({ search = location.search, orca = globalThis.orca } = {}) {
+export function createTransport({ search = location.search, hash = location.hash, orca = globalThis.orca } = {}) {
   const params = new URLSearchParams(search)
-  const backend = !params.has('fixture') && orca?.plugin?.request ? orcaBackend(orca) : fixtureBackend(params)
+  const token = params.has('fixture') ? null : sessionToken(hash)
+  if (token && hash.includes('token=')) history.replaceState(null, '', location.pathname + location.search)
+  const backend = params.has('fixture')
+    ? fixtureBackend(params)
+    : orca?.plugin?.request
+      ? orcaBackend(orca)
+      : token
+        ? httpBackend(location.origin + '/', token)
+        : fixtureBackend(params)
   /** Versions of the last view read; every action sends them so stale writes are refused. */
   let versions = {}
   const remember = (viewAnswer) => {
