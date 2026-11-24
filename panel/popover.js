@@ -75,20 +75,24 @@ function open(anchor, el, onKey) {
 
 /**
  * Overflow menu. entries: { label, icon, onSelect, danger?, disabled?, hint? } or 'separator'.
+ * A choice menu (the agent switcher) gives every entry `checked`, and may add `detail` (a second,
+ * quieter line), `tag` (a short marker) and `dim` (shown quieter, still selectable).
  */
-export function openMenu(anchor, { label, entries }) {
+export function openMenu(anchor, { label, entries, className = '' }) {
   const buttons = []
   const menu = h(
     'div',
-    { class: 'popover menu', role: 'menu', 'aria-label': label },
+    { class: `popover menu ${className}`.trim(), role: 'menu', 'aria-label': label },
     entries.map((entry) => {
       if (entry === 'separator') return h('div', { class: 'menu-sep', role: 'separator' })
+      const choice = entry.checked !== undefined
       const button = h(
         'button',
         {
           type: 'button',
-          class: `menu-item${entry.danger ? ' is-danger' : ''}`,
-          role: 'menuitem',
+          class: `menu-item${entry.danger ? ' is-danger' : ''}${entry.dim ? ' is-dim' : ''}${entry.detail ? ' has-detail' : ''}`,
+          role: choice ? 'menuitemradio' : 'menuitem',
+          'aria-checked': choice ? String(!!entry.checked) : null,
           tabindex: '-1',
           'aria-disabled': entry.disabled ? 'true' : null,
           title: entry.hint ?? null,
@@ -99,7 +103,10 @@ export function openMenu(anchor, { label, entries }) {
           },
         },
         icon(entry.icon, 14),
-        h('span', { class: 'menu-label' }, entry.label),
+        entry.detail
+          ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, entry.label), h('span', { class: 'menu-detail' }, entry.detail))
+          : h('span', { class: 'menu-label' }, entry.label),
+        entry.tag ? h('span', { class: 'menu-tag' }, entry.tag) : null,
       )
       buttons.push(button)
       return button
@@ -116,26 +123,36 @@ export function openMenu(anchor, { label, entries }) {
     else return
     e.preventDefault()
   })
-  focusAt(0)
+  focusAt(Math.max(0, buttons.findIndex((b) => b.getAttribute('aria-checked') === 'true')))
+}
+
+const SCOPE_OPTION = { local: ['Only me', 'user'], project: ['Team', 'users'] }
+const SCOPE_NOTE = {
+  local: 'Only me: kept in your own settings for that project, not shared.',
+  project: 'Team: written to the project files, usually committed and shared.',
+}
+const ONLY_SCOPE_NOTE = {
+  local: 'In a project, this class is kept only for you.',
+  project: 'In a project, this class is always shared with the team.',
 }
 
 /**
- * Move/Copy picker: a destination listbox (Global and every project) plus, when the class has an
- * "only me" file, a scope choice for projects. Not a modal: Escape or a click outside closes it.
- * options: { title, verb, destinations: [{ project, label, detail }], withScope, isOwnPlace(project, scope), onPick(project, scope) }
+ * Move/Copy picker: a destination listbox (Global and every project) plus, when the class may go into a
+ * project in more than one scope, a choice between them. Not a modal: Escape or a click outside closes it.
+ * options: { title, verb, destinations: [{ project, label, detail }], scopes, isOwnPlace(project, scope), onPick(project, scope) }
+ * `scopes`: the agent's projectScopes for the class, default first; with one, it is used without asking.
  */
-export function openPicker(anchor, { title, verb, destinations, withScope, isOwnPlace, onPick }) {
-  let scope = 'local'
+export function openPicker(anchor, { title, verb, destinations, scopes = ['project'], isOwnPlace, onPick }) {
+  let scope = scopes[0] ?? 'project'
   let active = -1
   const uid = `pk${Date.now().toString(36)}`
+  const withScope = scopes.length > 1
 
   const radios = withScope
-    ? [
-        ['local', 'Only me', 'user'],
-        ['project', 'Team', 'users'],
-      ].map(([value, text, glyph]) =>
-        h('button', { type: 'button', role: 'radio', class: 'seg-option', 'data-value': value, tabindex: '-1' }, icon(glyph, 14), text),
-      )
+    ? scopes.map((value) => {
+        const [text, glyph] = SCOPE_OPTION[value]
+        return h('button', { type: 'button', role: 'radio', class: 'seg-option', 'data-value': value, tabindex: '-1' }, icon(glyph, 14), text)
+      })
     : []
   const scopeNote = h('p', { class: 'picker-note' })
   const options = destinations.map((d, i) =>
@@ -157,11 +174,7 @@ export function openPicker(anchor, { title, verb, destinations, withScope, isOwn
       r.setAttribute('aria-checked', String(on))
       r.tabIndex = on ? 0 : -1
     }
-    scopeNote.textContent = withScope
-      ? scope === 'local'
-        ? 'Only me: kept in your own settings for that project, not shared.'
-        : 'Team: written to the project files, usually committed and shared.'
-      : 'In a project, this class is always shared with the team.'
+    scopeNote.textContent = withScope ? SCOPE_NOTE[scope] : scopes.length ? ONLY_SCOPE_NOTE[scope] : 'This class stays out of projects: it can only go to Global.'
     options.forEach((o, i) => {
       o.setAttribute('aria-disabled', String(disabledAt(i)))
       o.setAttribute('aria-selected', String(i === active))
@@ -187,7 +200,7 @@ export function openPicker(anchor, { title, verb, destinations, withScope, isOwn
     if (i < 0 || disabledAt(i)) return
     const { project } = destinations[i]
     closePopover({ restoreFocus: false })
-    onPick(project, project === null ? undefined : withScope ? scope : 'project')
+    onPick(project, project === null ? undefined : scope)
   }
 
   for (const r of radios) {
@@ -199,7 +212,8 @@ export function openPicker(anchor, { title, verb, destinations, withScope, isOwn
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault()
         e.stopPropagation()
-        scope = scope === 'local' ? 'project' : 'local'
+        const forward = e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        scope = scopes[(scopes.indexOf(scope) + (forward ? 1 : scopes.length - 1)) % scopes.length]
         sync()
         radios.find((x) => x.dataset.value === scope).focus()
       }

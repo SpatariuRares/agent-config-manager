@@ -3,9 +3,8 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 import type { CliResult, Http, HttpResult } from '../core/ports.ts'
-import { fakeCli, fakeFs, paths, type FakeReplies } from '../core/test-support.ts'
-import { buildView, runAction } from './backend.ts'
-import { checkUpdates, fetchHttp } from './updates.ts'
+import { buildView, checkUpdates, fakeCli, fakeFs, paths, runAction, type FakeReplies } from '../providers/claude/test-support.ts'
+import { fetchHttp } from './updates.ts'
 import type { Action, ActionAnswer, Item, UpdatesAnswer, View } from './view.ts'
 
 const SHOP = '/work/shop'
@@ -110,7 +109,7 @@ const find = (v: View, kind: Item['kind'], name: string, project: string | null 
   return item
 }
 async function run(deps: ReturnType<typeof setup> & { http?: Http }, action: Action): Promise<ActionAnswer> {
-  return runAction(deps, { action, versions: (await view(deps)).versions })
+  return runAction(deps, { agent: 'claude', action, versions: (await view(deps)).versions })
 }
 const okResult = (answer: ActionAnswer) => {
   assert.equal(answer.result.ok, true, answer.result.message)

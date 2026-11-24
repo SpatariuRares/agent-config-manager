@@ -1,0 +1,39 @@
+# Multi-agent: Claude Code, Codex, Gemini CLI, Copilot CLI
+
+Objective: manage the setup of every main coding agent from the same panel, one agent at a time, through a provider per agent, so a new agent is one provider file plus its tests.
+Branch: feat/multi-agent (stacked on feat/localhost) · Delivery: ask-on-risk · Tests: `npm test`, `npm run typecheck`, `npm run test:panel`.
+
+## Specs
+
+- S1 Agents: "io vorrei che possa gestire tutti i agenti principali quindi codex o simili". Providers for Claude Code (existing behavior, unchanged), Codex, Gemini CLI, Copilot CLI (the four installed here). Each reads the five classes it has (plugins/extensions, skills, agents, MCP servers, hooks) at user scope and, where the agent has them, per project.
+- S2 Extensible: "e che sia facilemente estendibile a qls nuovo agente". An `AgentProvider` interface in src/providers; adding an agent = one provider module + its tests + one line in the registry; the panel and core need no change. A short docs/adding-an-agent.md explains it with the Copilot provider as the worked example.
+- S3 One agent at a time (user picked option 1): an agent switcher at the top of the panel; tabs show only the classes that agent has; actions an agent does not support are hidden (read-only), with the agent's `note` saying why.
+- S4 Writes per provider follow the existing safety rules: backup first, version check, refuse on concurrent change; prefer the agent's own CLI (`codex mcp add/remove`, `gemini mcp add/remove`, `gemini extensions enable/disable`, …) when it exists; TOML (Codex) only with format-preserving edits, otherwise read-only. Formats are taken from each agent's current docs or source, never from memory; anything unverified stays read-only and is listed.
+- S5 Later (not this feature): copy an item from one agent to another.
+
+## Contract
+
+`src/adapters/view.ts` (this branch's first commit): `AgentInfo { id, name, detected, kinds, supports, configHome, note }`, `View.agents`, `View.agent`, `Item.agent`, `ActionRequest.agent`, and `AgentRequest { agent? }` as the input of 'view.get' and 'updates.check'.
+
+## Tasks
+
+| ID | Specs | Route | Status | Commit |
+| --- | --- | --- | --- | --- |
+| T1 | S2, S1 (Claude) | delegated writer A, parallel with T2: AgentProvider interface + registry, Claude provider from the existing core, backend/server/worker route by agent; every existing test stays green · Risk: item 3 (ports and contract reshaped) | done (177 tests; real Claude view unchanged) | b5e835a |
+| T2 | S3 | delegated writer B, parallel with T1: panel agent switcher, capability-driven tabs and actions, fixture with 4 agents, Playwright | done (46 panel tests) | 075a9a0 |
+| T3 | S1, S4 | delegated writers C, D, E in parallel after T1: Codex, Gemini, Copilot providers (research current formats first) · Risk: item 1 | done; verifier blockers fixed and rechecked | 03d7899, 55f9c14, 4a97c18, ec0123a |
+| T4 | S2 | inline: docs/adding-an-agent.md, seam check, real read-only run, verifier on T3 writes | done | fbc3ccd, 96f53bd |
+
+## Log
+
+- L1 (2026-11-24) User: "io vorrei che possa gestire tutti i agenti principali quindi codex o simili e che sia facilemente estendibile a qls nuovo agente"
+- L2 User: "ok fallo" to: option 1 (one agent at a time with a switcher) and the provider interface now, copy between agents later.
+- L3 Evidence: installed claude (/opt/homebrew/bin), codex-cli 0.171.0 (~/.local/bin), gemini 0.35.3 (nvm), Copilot CLI config in ~/.copilot. Codex: ~/.codex/config.toml with [marketplaces.*], [plugins."id@market"], [agents], [mcp_servers.*]; ~/.codex/skills, hooks.json, rules/, AGENTS.md. Gemini: ~/.gemini/settings.json (mcpServers, hooks), ~/.gemini/config/{agents,hooks.json,mcp_config.json,plugins}, extensions/, GEMINI.md. Copilot: ~/.copilot/mcp-config.json (mcpServers), agents/*.agent.md, skills/, installed-plugins/, config.json.
+- L4 T1: AgentProvider { id, info, buildView, runAction, checkUpdates? } in src/providers/types.ts; router refuses unknown-agent / not-detected / unsupported before a provider runs; toolkit.ts + testing.ts (providerContract). Backups: Claude keeps ~/.claude/backups/claude-config-manager; new agents use ~/.config/claude-config-manager/backups/<agent>. Parent moved project-writes.test.ts into providers/claude and removed the two temporary core shims. Real Claude view through the provider: 33 plugins, 137 skills, 32 agents, 17 MCP, 53 hooks, 28 projects, 19 backups, no problems.
+- L5 T2: switcher + capability-driven panel; open: the "Only me / Team" scope choice is still Claude's model; header still says "Claude Config".
+- L6 Codex writes to config.toml only through `codex mcp add|remove` (smol-toml for reading only, it loses comments on write). Gemini has `gemini mcp add|remove|enable|disable` and `gemini extensions enable|disable [--scope]|uninstall|update`. Copilot: no `copilot` binary on PATH; `gh copilot` exists (preview).
+- L7 T3 done: Codex 03d7899, Copilot 55f9c14, Gemini 4a97c18; core fix f48c157 (malformed JSON never quoted in problems). Guide docs/adding-an-agent.md fbc3ccd. Real read-only counts: Codex 13 plugins, 86+27 skills, 14 MCP, 12+6 hooks, 10 projects; Copilot 8 own skills (+77 shared read-only), 4 agents, 3 MCP; Gemini 1 extension, 85+16 skills, 5 MCP, 14 hooks, 8 projects. ~/.gemini/config belongs to Antigravity and is ignored.
+- L8 Verifier on T3: Copilot S4 met; Codex and Gemini S4 unmet. B1 Gemini quotes malformed JSON in problems; B2 Codex (and Claude, pre-existing) shows MCP args/URLs/hook commands unredacted; B3 Codex writes shared ~/.agents/skills; B4 Gemini puts argv (tokens) in messages and on command lines. Plus A3 Copilot misses --key/-k, A4 symlinked home compared by string in all three, A5 Codex '-x' shown removable. One correction batch running: a shared src/core/redact.ts used by all four providers.
+- L9 Per-agent projectScopes (27ee04f): Claude plugins/mcp/hooks local+project, skills/agents project; Codex skills/agents project, mcp none; Gemini mcp project; Copilot skills/agents/mcp project. Router refuses undeclared scopes; Item.enabled gives switches on any class (Gemini MCP). Behavior change: an explicit 'local' for a Claude skill/agent into a project is now refused (it used to land in the shared folder anyway).
+- L10 Fix batch ec0123a: shared src/core/redact.ts used by all four providers (MCP args/URLs, hook commands, CLI messages); Claude hook keys hash the command; Gemini B1/B4, Codex B2/B3, A3–A5 fixed with regression tests. 279 unit + 49 panel tests, tsc 0. Known limits: redaction is heuristic (over-hides some args, e.g. UUIDs block a Gemini move; tokens inside URL paths are not detected); Claude's copy of an MCP server into a project does not yet refuse secret args.
+- L11 Recheck of B1–B4 on ec0123a: all fixed (no secret in views, keys, problems or messages). Real read-only run through npm start: claude, codex, gemini, copilot all detected, 0 problems, 0 token patterns in the full responses. Agent notes now clamp to two lines (96f53bd). PR #5 feat/multi-agent → main (PR #4 had merged), merges cleanly. Native review not run.

@@ -1,7 +1,8 @@
-# Claude Config Manager
+# Agent Config Manager
 
-See your whole Claude Code setup in one place: plugins, skills, agents, MCP servers and hooks.
-Turn plugins on and off, move or copy items between global and projects, remove them, take and restore backups, and check for updates.
+One panel for the setup of your coding agents: Claude Code, Codex, Gemini CLI and Copilot CLI. Adding another agent is one provider folder: see [docs/adding-an-agent.md](docs/adding-an-agent.md).
+
+See plugins, skills, agents, MCP servers and hooks for each agent in one place. Turn them on and off, move or copy them between global and projects, remove them, take and restore backups, and check for updates, as far as each agent allows.
 
 It runs as a small web app on `localhost` with nothing but Node, so it works next to any agent or
 editor. The same panel also loads as an [Orca](https://github.com/stablyai/orca) sidebar plugin.

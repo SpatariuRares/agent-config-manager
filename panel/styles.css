@@ -1,4 +1,4 @@
-/* Claude Config panel. Styled only from Orca's --orca-* variables; the --fb-* sets are fallbacks
+/* Agent Config panel. Styled only from Orca's --orca-* variables; the --fb-* sets are fallbacks
    so the page also renders outside Orca (fixture page, tests, later localhost). */
 
 :root,
@@ -210,6 +210,100 @@ code {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------- Agent switcher ---------- */
+
+.agent {
+  padding: 0 12px 8px;
+}
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  max-width: 62%;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  color: var(--secondary-fg);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.agent-btn:hover:not(:disabled),
+.agent-btn[aria-expanded='true'] {
+  background: color-mix(in oklab, var(--secondary) 100%, var(--fg) 6%);
+}
+.agent-btn:disabled {
+  opacity: 0.5;
+}
+.agent-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-btn > .icon-chevron {
+  rotate: 90deg;
+  color: var(--muted-fg);
+}
+.agent-home {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted-fg);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 6px 0 0;
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+.agent-note .icon {
+  margin-top: 2px;
+  flex: none;
+}
+.agent-note-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.agent-note.is-open .agent-note-text {
+  display: block;
+}
+.agent-note-more {
+  flex: none;
+  align-self: flex-end;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.agent-note-more:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 /* ---------- Buttons ---------- */
@@ -1032,6 +1126,14 @@ code {
   outline-offset: 2px;
 }
 
+/* A plugin the agent cannot switch: its state, read-only */
+.onoff {
+  padding: 0 4px;
+  color: var(--muted-fg);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+}
+
 /* Plugin contents */
 .contents {
   display: grid;
@@ -1145,7 +1247,8 @@ code {
 :root.is-dragging .item:hover {
   background: none;
 }
-:root.is-dragging .acc.is-own-place {
+:root.is-dragging .acc.is-own-place,
+:root.is-dragging .acc.is-no-drop {
   opacity: 0.55;
 }
 
@@ -1433,6 +1536,51 @@ code {
 .menu-item[aria-disabled='true'] {
   opacity: 0.45;
   background: none;
+}
+.menu-item.has-detail {
+  align-items: flex-start;
+  height: auto;
+  padding: 5px 8px;
+}
+.menu-item.has-detail > .icon {
+  margin-top: 2px;
+}
+.menu-item[aria-checked='false'] > .icon {
+  visibility: hidden;
+}
+.menu-item[aria-checked='true'] > .icon {
+  color: var(--fg);
+}
+.menu-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.menu-detail {
+  color: var(--muted-fg);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu-item.is-dim .menu-label {
+  color: var(--muted-fg);
+}
+.menu-tag {
+  flex: none;
+  align-self: center;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--muted);
+  color: var(--muted-fg);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+}
+.agent-menu {
+  width: min(248px, calc(100vw - 16px));
 }
 .menu-sep {
   height: 1px;

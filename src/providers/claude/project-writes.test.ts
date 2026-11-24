@@ -4,9 +4,9 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { versionOf } from '../core/inventory.ts'
-import { setProjectPluginState } from '../core/toggle.ts'
-import { nodeFileSystem } from './node-fs.ts'
+import { versionOf } from '../../core/json.ts'
+import { setProjectPluginState } from './toggle.ts'
+import { nodeFileSystem } from '../../adapters/node-fs.ts'
 
 const home = await mkdtemp(join(tmpdir(), 'ccm-home-'))
 after(() => rm(home, { recursive: true, force: true }))

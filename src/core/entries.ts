@@ -1,27 +1,41 @@
-// Moves and copies skill folders and agent files between global and projects. A symlink moves
-// (or is copied) as a link, never its target. Nothing is overwritten: an existing destination refuses.
-import { occupied } from './backups.ts'
-import { knownProjects } from './inventory.ts'
-import type { ClaudePaths, FileSystem } from './ports.ts'
-import { entryDir, sameFolder, type Entry } from './setup.ts'
+// Moves and copies skill folders and agent files between global and projects. A symlink moves (or is
+// copied) as a link, never its target. Nothing is overwritten: an existing destination refuses.
+import { occupied, sameFolder } from './paths.ts'
+import type { FileSystem } from './ports.ts'
+
+export type EntryKind = 'skills' | 'agents'
+
+/** A skill folder or an agent file, as a provider read it. */
+export interface EntryRef {
+  kind: EntryKind
+  name: string
+  /** The skill folder or the agent file: what moves. */
+  entry: string
+  /** The symlink text when the entry is a symlink. */
+  link: string | null
+}
+
+/** Where an agent keeps its skill and agent folders. */
+export interface EntryPlaces {
+  /** The folder of a class: globally (project null) or in a project. */
+  dirOf(kind: EntryKind, project: string | null): string
+  /** The projects the agent knows; only these are destinations. */
+  projects(): Promise<string[]>
+  /** The agent's name, for messages ("Claude Code"). */
+  owner: string
+}
 
 export type EntryResult =
   | { ok: true; path: string }
   | { ok: false; reason: 'missing' | 'exists' | 'same-place' | 'unknown-project' | 'not-movable'; message: string }
 
-export async function moveEntry(
-  fs: FileSystem,
-  paths: ClaudePaths,
-  entry: Entry,
-  toProject: string | null,
-  copy: boolean
-): Promise<EntryResult> {
-  const dir = entryDir(paths, entry.kind, toProject)
+export async function moveEntry(fs: FileSystem, places: EntryPlaces, entry: EntryRef, toProject: string | null, copy: boolean): Promise<EntryResult> {
+  const dir = places.dirOf(entry.kind, toProject)
   if (toProject !== null) {
-    if (!(await knownProjects(fs, paths)).includes(toProject)) {
-      return { ok: false, reason: 'unknown-project', message: `${toProject} is not a project Claude Code knows.` }
+    if (!(await places.projects()).includes(toProject)) {
+      return { ok: false, reason: 'unknown-project', message: `${toProject} is not a project ${places.owner} knows.` }
     }
-    if (await sameFolder(fs, dir, entryDir(paths, entry.kind, null))) {
+    if (await sameFolder(fs, dir, places.dirOf(entry.kind, null))) {
       return { ok: false, reason: 'same-place', message: `${toProject} is your home folder: its ${entry.kind} are the global ones.` }
     }
   }
@@ -39,4 +53,19 @@ export async function moveEntry(
   }
   await (copy ? fs.copy(entry.entry, path) : fs.move(entry.entry, path))
   return { ok: true, path }
+}
+
+/** The entries of one folder: skill folders holding SKILL.md, or agent files, each with its link text. */
+export async function readEntryDir(
+  fs: FileSystem,
+  kind: EntryKind,
+  dir: string,
+  read: (fs: FileSystem, dir: string) => Promise<{ name: string; description: string; path: string }[]>
+): Promise<(EntryRef & { description: string; path: string })[]> {
+  const entries: (EntryRef & { description: string; path: string })[] = []
+  for (const item of await read(fs, dir)) {
+    const entry = kind === 'skills' ? item.path.slice(0, -'/SKILL.md'.length) : item.path
+    entries.push({ ...item, kind, entry, link: await fs.linkTarget(entry) })
+  }
+  return entries
 }

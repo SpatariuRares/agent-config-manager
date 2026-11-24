@@ -1,9 +1,8 @@
-// FileSystem port over node:fs, shared by the Orca worker and the future localhost server.
+// FileSystem port over node:fs, shared by the Orca worker and the localhost server.
 import { randomUUID } from 'node:crypto'
 import { chmod, cp, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
-import type { ClaudePaths, FileSystem } from '../core/ports.ts'
+import { dirname } from 'node:path'
+import type { FileSystem } from '../core/ports.ts'
 
 const isMissing = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException).code
@@ -88,8 +87,4 @@ export const nodeFileSystem: FileSystem = {
       throw error
     }
   }
-}
-
-export function defaultClaudePaths(home = homedir()): ClaudePaths {
-  return { claudeDir: join(home, '.claude'), userConfigFile: join(home, '.claude.json') }
 }

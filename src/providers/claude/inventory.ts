@@ -1,5 +1,12 @@
 // Reads the Claude Code setup into one read-only model. Never writes.
-import type { ClaudePaths, FileSystem } from './ports.ts'
+import { isObject, readJson, versionOf, type Json } from '../../core/json.ts'
+import { describe, readAgents, readSkills, sortByName, type Agent, type Skill } from '../../core/markdown.ts'
+import { existingProjects } from '../../core/paths.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import { redactArgs, redactUrl } from '../../core/redact.ts'
+import type { ClaudePaths } from './ports.ts'
+
+export { isObject, readAgents, readSkills, versionOf, type Agent, type Json, type Skill }
 
 export interface PluginContributions {
   skills: string[]
@@ -41,14 +48,6 @@ export interface Plugin {
   installs: Install[]
 }
 
-export interface Skill {
-  name: string
-  description: string
-  path: string
-}
-
-export type Agent = Skill
-
 export interface McpServer {
   name: string
   transport: string
@@ -76,8 +75,6 @@ export interface Inventory {
   /** versionOf() of every settings file read, by absolute path. */
   versions: Record<string, string>
 }
-
-export type Json = Record<string, any>
 
 export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise<Inventory> {
   const problems: string[] = []
@@ -146,36 +143,7 @@ export async function knownProjects(fs: FileSystem, paths: ClaudePaths): Promise
 }
 
 async function readProjects(fs: FileSystem, userConfig: Json): Promise<string[]> {
-  const projects: string[] = []
-  for (const path of Object.keys(isObject(userConfig.projects) ? userConfig.projects : {})) {
-    if (path.startsWith('/') && (await fs.realPath(path)) !== null) projects.push(path)
-  }
-  return projects.sort()
-}
-
-/** FNV-1a of the file text: cheap, stable, and enough to notice that the file changed. */
-export function versionOf(text: string | null): string {
-  if (text === null) return ''
-  let hash = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return `${text.length}-${hash.toString(16)}`
-}
-
-async function readJson(fs: FileSystem, path: string, problems: string[]): Promise<Json> {
-  const text = await fs.readText(path)
-  if (text === null) return {}
-  try {
-    const value = JSON.parse(text)
-    if (isObject(value)) return value
-    problems.push(`${path}: expected a JSON object`)
-    return {}
-  } catch (error) {
-    problems.push(`${path}: ${(error as Error).message}`)
-    return {}
-  }
+  return existingProjects(fs, Object.keys(isObject(userConfig.projects) ? userConfig.projects : {}))
 }
 
 async function readPlugins(
@@ -267,42 +235,15 @@ async function markdownFiles(fs: FileSystem, paths: string[]): Promise<{ name: s
   return files
 }
 
-export function isObject(value: unknown): value is Json {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function unique(values: string[]): string[] {
   return [...new Set(values)].sort()
-}
-
-/** Skills in a folder of skill folders, each holding SKILL.md. */
-export async function readSkills(fs: FileSystem, dir: string): Promise<Skill[]> {
-  const skills: Skill[] = []
-  for (const entry of await fs.listEntries(dir)) {
-    const path = `${dir}/${entry}/SKILL.md`
-    const text = await fs.readText(path)
-    if (text !== null) skills.push(describe(entry, path, text))
-  }
-  return sortByName(skills)
-}
-
-/** Agents in a folder of .md files. */
-export async function readAgents(fs: FileSystem, dir: string): Promise<Agent[]> {
-  const agents: Agent[] = []
-  for (const entry of await fs.listEntries(dir)) {
-    if (!entry.endsWith('.md')) continue
-    const path = `${dir}/${entry}`
-    const text = await fs.readText(path)
-    if (text !== null) agents.push(describe(entry.slice(0, -3), path, text))
-  }
-  return sortByName(agents)
 }
 
 function readMcpServers(userConfig: Json): McpServer[] {
   return mcpServersOf(userConfig.mcpServers).map(({ name, transport, target }) => ({ name, transport, target }))
 }
 
-/** The servers of one `mcpServers` map, sorted by name, each with its config as written. */
+/** The servers of one `mcpServers` map, sorted by name, each with its config as written and a secret-safe target. */
 export function mcpServersOf(map: unknown): (McpServer & { config: Json })[] {
   return sortByName(
     Object.entries(isObject(map) ? map : {})
@@ -310,7 +251,10 @@ export function mcpServersOf(map: unknown): (McpServer & { config: Json })[] {
       .map(([name, server]) => ({
         name,
         transport: server.type ?? (server.url ? 'http' : 'stdio'),
-        target: server.url ?? [server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).join(' '),
+        target:
+          typeof server.url === 'string'
+            ? redactUrl(server.url)
+            : redactArgs([server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).map(String)).join(' '),
         config: server
       }))
   )
@@ -352,22 +296,4 @@ export function hookEntries(settings: Json): HookEntry[] {
     })
   }
   return entries
-}
-
-/** Name and description from the YAML frontmatter, falling back to the file name. */
-function describe(fallbackName: string, path: string, text: string): Skill {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? ''
-  const field = (key: string) => {
-    const match = new RegExp(`^${key}:[ \\t]*(.*)$((?:\\r?\\n[ \\t]+.*)*)`, 'm').exec(frontmatter)
-    if (!match) return ''
-    const head = match[1].trim()
-    // A block scalar (>, >-, |, |-) keeps its text on the indented lines below the key.
-    const value = /^[>|][+-]?$/.test(head) ? match[2] : `${head}${match[2]}`
-    return value.trim().split(/\s*\r?\n\s*/).join(' ').replace(/^(["'])(.*)\1$/, '$2')
-  }
-  return { name: field('name') || fallbackName, description: field('description'), path }
-}
-
-function sortByName<T extends { name: string }>(items: T[]): T[] {
-  return items.sort((a, b) => a.name.localeCompare(b.name))
 }

@@ -1,10 +1,11 @@
 // The only module that knows how the panel reaches its backend.
 // Every backend answers three requests from src/adapters/view.ts:
-//   'view.get'      -> ViewAnswer
-//   'action.run'    -> ActionAnswer, with input ActionRequest { action, versions }
-//   'updates.check' -> UpdatesAnswer (network; sent only when the user asks)
-// A backend is just { request(name, input): Promise<answer> }; the transport adds versions and turns
-// transport failures into the same answer shapes, so the UI handles one kind of result.
+//   'view.get'      -> ViewAnswer, with input AgentRequest { agent? }
+//   'action.run'    -> ActionAnswer, with input ActionRequest { agent, action, versions }
+//   'updates.check' -> UpdatesAnswer, with input AgentRequest { agent? } (network; sent only when the user asks)
+// A backend is just { request(name, input): Promise<answer> }; the transport adds the selected agent
+// and the versions, and turns transport failures into the same answer shapes, so the UI handles one
+// kind of result.
 
 import { createFixtureBackend } from './fixture.js'
 
@@ -73,6 +74,30 @@ function fixtureBackend(params) {
   return { mode: 'fixture', request: backend.request, onTheme: () => undefined }
 }
 
+/** The agent the user picked last, kept per viewer; null when none was picked or storage is off. */
+const AGENT_KEY = 'ccm.agent'
+function storedAgent() {
+  try {
+    return localStorage.getItem(AGENT_KEY) || null
+  } catch {
+    return null
+  }
+}
+function storeAgent(id) {
+  try {
+    localStorage.setItem(AGENT_KEY, id)
+  } catch {
+    /* storage unavailable: the choice just does not persist */
+  }
+}
+function forgetAgent() {
+  try {
+    localStorage.removeItem(AGENT_KEY)
+  } catch {
+    /* nothing to forget */
+  }
+}
+
 const HINTS = {
   timeout: 'The plugin worker took too long to answer.',
   unavailable: 'The plugin worker is not running. Reload the plugin.',
@@ -98,18 +123,59 @@ export function createTransport({ search = location.search, hash = location.hash
         : noServerBackend()
   /** Versions of the last view read; every action sends them so stale writes are refused. */
   let versions = {}
+  /**
+   * The agent every request is for: the one the user picked last, else the one the backend chose
+   * for the first view. Null until either is known; the backend then picks its first detected agent.
+   */
+  let agent = storedAgent()
+  /** True once a view came back for `agent`, so a remembered id is known to still exist. */
+  let confirmed = false
   const remember = (viewAnswer) => {
-    if (viewAnswer?.ok) versions = viewAnswer.view.versions
+    if (!viewAnswer?.ok) return viewAnswer
+    versions = viewAnswer.view.versions
+    if (viewAnswer.view.agent) agent = viewAnswer.view.agent
+    confirmed = true
     return viewAnswer
+  }
+  const forAgent = () => (agent ? { agent } : {})
+
+  async function fetchView() {
+    const asked = agent
+    const answer = await backend.request('view.get', forAgent())
+    // The user switched agents while this was in flight: hand it back untouched; the caller drops it.
+    if (asked !== agent) return answer
+    return remember(answer)
   }
 
   return {
     mode: backend.mode,
     onTheme: backend.onTheme,
+    /** The agent requests are sent for, or null before the first view. */
+    get agent() {
+      return agent
+    },
+    /** Selects the agent for every later request and remembers it for this viewer. */
+    setAgent(id) {
+      if (!id || id === agent) return
+      agent = id
+      confirmed = false
+      versions = {}
+      storeAgent(id)
+    },
     /** @returns {Promise<import('../src/adapters/view.ts').ViewAnswer>} */
     async getView() {
       try {
-        return remember(await backend.request('view.get', {}))
+        const answer = await fetchView()
+        if (answer?.ok || !agent || confirmed) return answer
+        // The remembered agent could not be read. Ask for the backend's default to learn the agents:
+        // an id it no longer knows is forgotten; a known one keeps its error and the switcher.
+        const asked = agent
+        const fallback = await backend.request('view.get', {})
+        if (asked !== agent || !fallback?.ok) return answer
+        if (fallback.view.agents?.some((a) => a.id === asked)) return { ...answer, agents: fallback.view.agents }
+        forgetAgent()
+        agent = null
+        return remember(fallback)
       } catch (error) {
         return { ok: false, error: describe(error) }
       }
@@ -117,7 +183,7 @@ export function createTransport({ search = location.search, hash = location.hash
     /** @returns {Promise<import('../src/adapters/view.ts').ActionAnswer>} */
     async runAction(action) {
       try {
-        const answer = await backend.request('action.run', { action, versions })
+        const answer = await backend.request('action.run', { agent, action, versions })
         remember(answer.view)
         return answer
       } catch (error) {
@@ -128,7 +194,7 @@ export function createTransport({ search = location.search, hash = location.hash
     /** @returns {Promise<{ ok: true, answer: import('../src/adapters/view.ts').UpdatesAnswer } | { ok: false, error: string }>} */
     async checkUpdates() {
       try {
-        const answer = await backend.request('updates.check', {})
+        const answer = await backend.request('updates.check', forAgent())
         if (!answer || typeof answer.statuses !== 'object') return { ok: false, error: 'The answer had no statuses.' }
         return { ok: true, answer }
       } catch (error) {

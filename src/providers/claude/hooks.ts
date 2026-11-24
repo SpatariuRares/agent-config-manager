@@ -1,7 +1,8 @@
 // Moves, copies and removes single hook commands between settings files, keeping event and matcher.
 // Every write goes through updateJsonFile: version check, backup, then the write.
 import { hookEntries, isObject, versionOf, type Json } from './inventory.ts'
-import type { ClaudePaths, FileSystem } from './ports.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import type { ClaudePaths } from './ports.ts'
 import { updateJsonFile, type Clock } from './toggle.ts'
 
 export interface HookRef {

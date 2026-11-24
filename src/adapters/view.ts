@@ -3,12 +3,45 @@
 
 export type Kind = 'plugins' | 'skills' | 'agents' | 'mcp' | 'hooks'
 
+/** A coding agent whose setup this app manages, e.g. 'claude', 'codex', 'gemini', 'copilot'. */
+export type AgentId = string
+
+export type ActionType = Action['type']
+
+/** One agent, as the panel's agent switcher shows it. Each agent is a provider in src/providers. */
+export interface AgentInfo {
+  id: AgentId
+  /** Display name, e.g. "Claude Code". */
+  name: string
+  /** True when the agent is installed on this machine (its binary or config folder exists). */
+  detected: boolean
+  /** The classes this agent has; the panel shows only these tabs. */
+  kinds: Kind[]
+  /** Per class, the actions this agent can do; anything missing is read-only in the panel. */
+  supports: Partial<Record<Kind, ActionType[]>>
+  /**
+   * Per class, the scopes a move or copy into a project may target, in preference order: the first is the
+   * default (a drag drop uses it). A missing class or an empty list means items of that class cannot go into
+   * a project. Only classes whose `supports` include 'move' may be listed.
+   */
+  projectScopes: Partial<Record<Kind, ProjectScope[]>>
+  /** Where the agent keeps its setup, shown to the user (e.g. "~/.codex/config.toml"). */
+  configHome: string
+  /** Why something is read-only or missing, shown once per agent. */
+  note?: string
+}
+
 /** Which file or folder an item lives in. user = global; project = shared with the team; local = only me. */
 export type Scope = 'user' | 'project' | 'local'
+
+/** The scopes inside a project: 'project' = team (shared files), 'local' = only me. */
+export type ProjectScope = 'project' | 'local'
 
 export interface Item {
   /** Unique and stable across reads, e.g. `skills:/abs/path/SKILL.md`. Actions name items by key. */
   key: string
+  /** The agent this item belongs to. */
+  agent: AgentId
   kind: Kind
   name: string
   description: string
@@ -21,6 +54,11 @@ export interface Item {
   movable: boolean
   notMovableReason?: string
   removable: boolean
+  /**
+   * The item's on/off switch, for a class whose agent supports 'setEnabled' there (e.g. Gemini CLI MCP servers).
+   * Plugin items keep theirs in `plugin.enabled`; the panel reads `plugin?.enabled ?? enabled`.
+   */
+  enabled?: boolean
   plugin?: {
     id: string
     /** The value in this item's own settings file (global switch, or the project override). */
@@ -76,6 +114,10 @@ export interface BackupEntry {
 }
 
 export interface View {
+  /** Every agent this app knows, detected or not; the switcher lists them. */
+  agents: AgentInfo[]
+  /** The agent this view shows. */
+  agent: AgentId
   items: Item[]
   /** Projects Claude Code knows that still exist, sorted; every one is a drop target. */
   projects: string[]
@@ -89,8 +131,11 @@ export type ViewAnswer = { ok: true; view: View } | { ok: false; error: string }
 
 export interface Target {
   project: string | null
-  /** For a project target: 'local' (only me, default) or 'project' (team). Ignored for global. */
-  scope?: 'project' | 'local'
+  /**
+   * For a project target: one of the agent's `projectScopes` for the item's class; without it, the provider's
+   * default (the first declared). Ignored for global.
+   */
+  scope?: ProjectScope
 }
 
 /** An action the panel can send; `undo` in a result is one of these, ready to send back. */
@@ -127,6 +172,13 @@ export interface ActionAnswer {
 
 /** What the panel sends: the action plus the versions of the view it acted on. */
 export interface ActionRequest {
+  /** The agent the action applies to; the view's `agent`. */
+  agent: AgentId
   action: Action
   versions: Record<string, string>
+}
+
+/** Input of 'view.get' and 'updates.check'; without `agent`, the first detected agent. */
+export interface AgentRequest {
+  agent?: AgentId
 }

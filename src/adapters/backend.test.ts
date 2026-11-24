@@ -1,8 +1,9 @@
 // The panel contract end to end over in-memory doubles: buildView and runAction.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fakeCli, fakeFs, paths } from '../core/test-support.ts'
-import { actionQueue, buildView, runAction } from './backend.ts'
+import { hookKey } from '../providers/claude/actions.ts'
+import { buildView, fakeCli, fakeFs, paths, runAction } from '../providers/claude/test-support.ts'
+import { actionQueue } from './backend.ts'
 import type { Action, ActionAnswer, Item, View } from './view.ts'
 
 const BACKUPS = '/home/.claude/backups/claude-config-manager'
@@ -68,7 +69,7 @@ const find = (v: View, kind: Item['kind'], name: string, project: string | null 
 }
 
 async function run(deps: Deps, action: Action, versions?: Record<string, string>): Promise<ActionAnswer> {
-  return runAction(deps, { action, versions: versions ?? (await view(deps)).versions })
+  return runAction(deps, { agent: 'claude', action, versions: versions ?? (await view(deps)).versions })
 }
 
 const ok = (answer: ActionAnswer) => {
@@ -151,8 +152,7 @@ const versionsOf = (answer: ActionAnswer) => (answer.view.ok ? answer.view.view.
 const userKey = (id: string) => `plugins:${JSON.stringify([null, 'user', id])}`
 const overrideKey = (project: string, scope: string, id: string) => `plugins:${JSON.stringify([project, scope, id])}`
 const mcpKeyOf = (project: string | null, scope: string, name: string) => `mcp:${JSON.stringify([project, scope, name])}`
-const hookKeyOf = (file: string, event: string, matcher: string, command: string) =>
-  `hooks:${JSON.stringify([file, event, matcher, command, 0])}`
+const hookKeyOf = (file: string, event: string, matcher: string, command: string) => hookKey(file, event, matcher, command, 0)
 const REVIEW = '/home/.claude/skills/review'
 const REVIEW_KEY = 'skills:/home/.claude/skills/review/SKILL.md'
 

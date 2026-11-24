@@ -1,4 +1,4 @@
-// The only way the core touches the disk. Adapters implement it; tests fake it.
+// The only ways the core and the providers touch the machine. Adapters implement them; tests fake them.
 export interface FileSystem {
   /** The file's text, or null when it does not exist. */
   readText(path: string): Promise<string | null>
@@ -16,37 +16,23 @@ export interface FileSystem {
   linkTarget(path: string): Promise<string | null>
 }
 
-export interface ClaudePaths {
-  /** Usually ~/.claude */
-  claudeDir: string
-  /** Usually ~/.claude.json */
-  userConfigFile: string
-}
-
 export interface CliResult {
   ok: boolean
   output: string
 }
 
-/** The official `claude` CLI, for operations Claude Code owns (plugin files, MCP servers in ~/.claude.json). */
-export interface PluginCli {
-  /** Runs `claude plugin uninstall`; `cwd` is the project folder for a project or local install. */
-  uninstall(id: string, scope: string, cwd: string | null): Promise<CliResult>
-  /** Runs `claude mcp add-json <name> <json> --scope <scope>`; `cwd` is the project folder (null: home). */
-  mcpAdd(name: string, json: string, scope: string, cwd: string | null): Promise<CliResult>
-  /** Runs `claude mcp remove <name> --scope <scope>`; `cwd` is the project folder (null: home). */
-  mcpRemove(name: string, scope: string, cwd: string | null): Promise<CliResult>
+/**
+ * Runs programs by argv, never through a shell, so no argument is ever parsed as shell syntax.
+ * Every agent CLI (claude, codex, gemini, copilot, npx, git) goes through this one port.
+ */
+export interface CommandRunner {
   /**
-   * Runs `claude plugin update <id> --scope <scope> --json`, plus `--accept-command <sha256>` only when the user
-   * confirmed that command; never `-y`. `cwd` is the project folder for a project or local install (null: home).
+   * Runs `command` (a name looked up like find(), or an absolute path) with `argv` in `cwd` (null: the home
+   * folder). Never throws: a missing command is `{ ok: false, output: 'The <command> command was not found.' }`.
    */
-  pluginUpdate(id: string, scope: string, cwd: string | null, acceptCommand?: string): Promise<CliResult>
-  /** Runs `claude plugin marketplace update`. */
-  marketplaceUpdate(): Promise<CliResult>
-  /** Runs `npx -y skills update <name> -g -y` (a skill installed globally by the `skills` CLI). */
-  skillsUpdate(name: string): Promise<CliResult>
-  /** Runs `git <args>` in `cwd`, for read-only questions such as `rev-parse`. */
-  git(args: string[], cwd: string): Promise<CliResult>
+  run(command: string, argv: readonly string[], cwd: string | null, options?: { timeoutMs?: number }): Promise<CliResult>
+  /** The absolute path of the executable `name` on PATH (or in the usual install folders), or null. Starts no process. */
+  find(name: string): Promise<string | null>
 }
 
 export type HttpResult =
@@ -58,3 +44,5 @@ export type HttpResult =
 export interface Http {
   getJson(url: string): Promise<HttpResult>
 }
+
+export type Clock = () => Date
