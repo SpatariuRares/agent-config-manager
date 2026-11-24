@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readInventory, versionOf as versionOfText } from './inventory.ts'
-import { listBackups, restoreBackup, setProjectPluginState } from './toggle.ts'
+import { listBackups, restoreBackup, setProjectPluginState, updateJsonFile } from './toggle.ts'
 import { fakeFs, paths } from './test-support.ts'
 
 const BACKUPS = '/home/.claude/backups/claude-config-manager'
@@ -198,4 +198,41 @@ test('a plugin installed but only set in another project can be turned on here',
 test('a project that only holds dot folders is still listed', async () => {
   const fs = setup({ '/home/.claude.json': JSON.stringify({ projects: { '/work/shop': {}, '/work/dots': {} } }), '/work/dots/.git/HEAD': 'x' })
   assert.deepEqual((await readInventory(fs, paths)).projects, ['/work/dots', '/work/shop'])
+})
+
+test('restore still puts back an only-me backup, and refuses a .mcp.json of a project no longer known', async () => {
+  const fs = setup({ '/work/old/.mcp.json': '{}' })
+  await setProjectPluginState(fs, paths, { id: 'b@m', project: '/work/shop', scope: 'local', enabled: true, version: '' }, clock)
+  const [name] = await listBackups(fs, paths)
+  const later = () => new Date('2026-11-24T11:00:00.000Z')
+  const restored = await restoreBackup(fs, paths, { name, settingsVersion: await version(fs, SHOP_LOCAL) }, later)
+  assert.equal(restored.ok, true)
+  assert.equal(fs.files[SHOP_LOCAL], '{}\n')
+
+  const stray = `${encodeURIComponent('/work/old/.mcp.json')}.2026-11-24T09-00-00-000Z.json`
+  fs.files[`${BACKUPS}/${stray}`] = '{"mcpServers":{}}'
+  const refused = await restoreBackup(fs, paths, { name: stray, settingsVersion: versionOfText('{}') }, later)
+  assert.equal(refused.ok === false && refused.reason, 'unknown-project')
+  assert.equal(fs.files['/work/old/.mcp.json'], '{}')
+})
+
+test('updateJsonFile keeps the project-write invariants: known projects only, never the user file by alias', async () => {
+  const user = JSON.stringify({ enabledPlugins: {} })
+  const fs = fakeFs({
+    '/home/.claude/settings.json': user,
+    '/home/.claude.json': JSON.stringify({ projects: { '/home/sub/..': {} } }),
+    '/home/sub/x': '1'
+  })
+  const edit = (json: Record<string, any>) => void (json.hooks = {})
+  const alias = await updateJsonFile(
+    fs,
+    paths,
+    { project: '/home/sub/..', file: '/home/sub/../.claude/settings.json', version: versionOfText(user), edit },
+    clock
+  )
+  assert.equal(alias.ok === false && alias.reason, 'unknown-project')
+  const unknown = await updateJsonFile(fs, paths, { project: '/etc', file: '/etc/.claude/settings.json', version: '', edit }, clock)
+  assert.equal(unknown.ok === false && unknown.reason, 'unknown-project')
+  assert.equal(fs.files['/home/.claude/settings.json'], user)
+  assert.equal(fs.files['/etc/.claude/settings.json'], undefined)
 })

@@ -37,3 +37,26 @@ test('finds claude on PATH, and reports a missing binary instead of throwing', a
   const result = await claudeCli(async () => null).uninstall('a@m', 'user', null)
   assert.deepEqual(result, { ok: false, output: 'The claude command was not found.' })
 })
+
+test('adds an MCP server with add-json and the scope, in the given folder', async () => {
+  const { realpath } = await import('node:fs/promises')
+  const result = await claudeCli(async () => fake).mcpAdd('db', '{"command":"x"}', 'local', scratch)
+  assert.deepEqual(result, {
+    ok: true,
+    output: `mcp add-json db {"command":"x"} --scope local @ ${await realpath(scratch)}`
+  })
+})
+
+test('removes an MCP server with the scope, and reports failures', async () => {
+  const cli = claudeCli(async () => fake)
+  const { realpath } = await import('node:fs/promises')
+  assert.deepEqual(await cli.mcpRemove('db', 'project', scratch), {
+    ok: true,
+    output: `mcp remove db --scope project @ ${await realpath(scratch)}`
+  })
+  assert.equal((await cli.mcpRemove('db', 'broken', null)).ok, false)
+  assert.deepEqual(await claudeCli(async () => null).mcpRemove('db', 'user', null), {
+    ok: false,
+    output: 'The claude command was not found.'
+  })
+})
