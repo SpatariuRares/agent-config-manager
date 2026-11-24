@@ -469,3 +469,14 @@ test('the action queue runs one action at a time, in order, and survives a failu
   assert.deepEqual(log, ['start a', 'end a', 'start b', 'end b', 'start c', 'end c'])
   assert.deepEqual(results.map((r) => r.status), ['rejected', 'fulfilled', 'fulfilled'])
 })
+
+test('a plugin move refuses when the destination already has an override for it, and changes nothing', async () => {
+  const deps = setup({ [BLOG_LOCAL]: json({ enabledPlugins: { 'b@m': false } }) })
+  const v = await view(deps)
+  const before = { ...deps.fs.files }
+  for (const copy of [false, true]) {
+    const answer = await run(deps, { type: 'move', key: find(v, 'plugins', 'b', SHOP).key, to: { project: BLOG, scope: 'local' }, copy }, v.versions)
+    assert.equal(failed(answer).reason, 'exists')
+    assert.deepEqual(deps.fs.files, before)
+  }
+})

@@ -132,6 +132,9 @@ export async function isUserSettingsFile(fs: FileSystem, paths: ClaudePaths, fil
   const split = (path: string) => [path.slice(0, path.lastIndexOf('/')), path.slice(path.lastIndexOf('/') + 1)]
   const [dir, name] = split(file)
   const [userDir, userName] = split(settingsFile(paths))
+  // The file itself may be a link to the user settings (whatever its name), or sit in a folder that is one.
+  const realFile = await fs.realPath(file)
+  if (realFile !== null && realFile === (await fs.realPath(settingsFile(paths)))) return true
   if (name !== userName) return false
   const real = await fs.realPath(dir)
   return real !== null && real === (await fs.realPath(userDir))

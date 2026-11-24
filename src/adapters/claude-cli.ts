@@ -33,7 +33,14 @@ export function claudeCli(binary: () => Promise<string | null> = () => findClaud
   }
   return {
     uninstall: (id, scope, cwd) => run(['plugin', 'uninstall', id, '--scope', scope, '--keep-data', '--json'], cwd),
-    mcpAdd: (name, json, scope, cwd) => run(['mcp', 'add-json', name, json, '--scope', scope], cwd),
-    mcpRemove: (name, scope, cwd) => run(['mcp', 'remove', name, '--scope', scope], cwd)
+    mcpAdd: (name, json, scope, cwd) =>
+      optionLike(name) ?? run(['mcp', 'add-json', name, json, '--scope', scope], cwd),
+    mcpRemove: (name, scope, cwd) => optionLike(name) ?? run(['mcp', 'remove', name, '--scope', scope], cwd)
   }
+}
+
+/** A name like `-h` would be read by the CLI as an option, so it is refused before running anything. */
+function optionLike(name: string): Promise<CliResult> | null {
+  if (!name.startsWith('-')) return null
+  return Promise.resolve({ ok: false, output: `An MCP server name cannot start with "-" (${name}); rename it in its config file.` })
 }

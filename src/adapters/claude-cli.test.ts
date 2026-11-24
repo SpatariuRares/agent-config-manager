@@ -60,3 +60,11 @@ test('removes an MCP server with the scope, and reports failures', async () => {
     output: 'The claude command was not found.'
   })
 })
+
+test('an MCP name that looks like an option is refused before running claude', async () => {
+  const cli = claudeCli(async () => fake)
+  for (const result of [await cli.mcpAdd('-h', '{}', 'local', null), await cli.mcpRemove('--scope', 'local', null)]) {
+    assert.equal(result.ok, false)
+    assert.match(result.output, /cannot start with "-"/)
+  }
+})

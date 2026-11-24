@@ -25,6 +25,25 @@ export async function movePlugin(fs: FileSystem, paths: ClaudePaths, move: Plugi
   if (from.project === to.project && (from.project === null || from.scope === to.scope)) {
     return { ok: false, reason: 'same-place', message: `${id} is already there.`, backups: [], partial: false }
   }
+  if (to.project !== null) {
+    // Like every other class, a move never overwrites what the destination already has.
+    const file = projectSettingsFile(to.project, scopeOf(to))
+    let existing: unknown
+    try {
+      existing = JSON.parse((await fs.readText(file)) ?? '{}')?.enabledPlugins?.[id]
+    } catch {
+      existing = undefined
+    }
+    if (typeof existing === 'boolean') {
+      return {
+        ok: false,
+        reason: 'exists',
+        message: `${file} already sets ${id} (${existing ? 'on' : 'off'}). Clear it first, or change it there.`,
+        backups: [],
+        partial: false
+      }
+    }
+  }
   const written =
     to.project === null
       ? await setGlobalPlugin(fs, paths, id, move.enabled, versions[settingsFile(paths)] ?? '', clock)
