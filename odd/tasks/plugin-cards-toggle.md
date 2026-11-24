@@ -16,7 +16,7 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 | --- | --- | --- | --- | --- |
 | T1 | S2 | inline | done (13 tests green; real data checked) | 4b3784e |
 | T2 | S1 | inline · Risk: item 1 (rewrites user settings), item 4 (concurrent writers) | done (24 tests green) | 59de991 |
-| T3 | S1, S3, S4 | inline | todo | |
+| T3 | S1, S3, S4 | inline | done (plugin check clean; real round trip verified) | ad16a22 |
 
 ## Log
 
@@ -24,3 +24,4 @@ Branch: feat/plugin-cards-toggle · Delivery: ask-on-risk · Test runner: `npm t
 - L2 Evidence: 24 plugins in installed_plugins.json, all present in enabledPlugins. Contributions live under installPath: skills/, agents/, commands/, hooks/hooks.json, .mcp.json. settings.json is 2-space JSON with a trailing newline. RDD: on (default).
 - L3 T1: plugin.json may declare extra component paths (string or list) and inline mcpServers; skills may be nested (skills/<group>/<skill>). Both handled and tested.
 - L4 T2: writes refuse on settingsVersion mismatch (FNV-1a of file text), unknown id, or unparsable file; backups in ~/.claude/backups/claude-config-manager; restore backs up the current file first and only accepts listed backup names; node adapter writes temp+rename and resolves symlinks. Independent verifier runs at feature end (Risk items 1, 4).
+- L5 T3: tabs replaced by a Select (S4). Real-config check via worker: stripe on -> off -> byte-identical; restore of the first backup returned settings.json to its original sha (87be15da4e8a); a stale settingsVersion is refused with 'changed' and no write. My own mistaken third call (reusing the original version after a byte-identical round trip) briefly enabled stripe; restored within ~9s.
