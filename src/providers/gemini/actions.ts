@@ -1,0 +1,285 @@
+// Gemini CLI's writes. Every change goes through the `gemini` CLI by argv, after a version check of each file the
+// CLI will touch and a backup of it; then the file is read again to prove the change happened, since several
+// gemini subcommands print an error and still exit 0. The only direct writes are restore and snapshot (backups).
+import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
+import {
+  backUp,
+  backupTarget,
+  isObject,
+  isTrashName,
+  itemKey,
+  optionLikeRefusal,
+  restoreFile,
+  tilde,
+  versionOf,
+  type Clock,
+  type Json,
+  type ProviderDeps
+} from '../toolkit.ts'
+import { projectSettings, settingsOf, type GeminiPaths } from './paths.ts'
+import { extensionEnabled, readSetup, rulesFor, stripComments, transportOf, moveRefusal, type Extension, type McpServer, type Setup } from './read.ts'
+import { redactUrl } from './redact.ts'
+
+type Done = ActionResult & { ok: true }
+type Refused = ActionResult & { ok: false }
+
+const done = (message: string, undo?: Action, warning?: string): Done => ({ ok: true, message, ...(undo ? { undo } : {}), ...(warning ? { warning } : {}) })
+const refuse = (reason: string, message: string): Refused => ({ ok: false, reason, message })
+const CHANGED = refuse('changed', 'A Gemini CLI settings file changed since it was read. Refresh and try again.')
+const GONE = refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
+
+/** The last lines of a CLI's output, for messages. */
+const tail = (output: string) => output.trim().split('\n').slice(-3).join(' ').slice(0, 400)
+
+/** A JSON (or JSONC) file as an object; null when it exists but is not one. */
+async function objectAt(deps: ProviderDeps, file: string, comments: boolean): Promise<Json | null> {
+  const text = await deps.fs.readText(file)
+  if (text === null) return {}
+  try {
+    const value = JSON.parse(comments ? stripComments(text) : text)
+    return isObject(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+interface Context {
+  deps: ProviderDeps
+  paths: GeminiPaths
+  clock: Clock
+  versions: Record<string, string>
+  say: (path: string) => string
+}
+
+/** Refuses when any file changed since the view read it; otherwise backs up each one that exists. */
+async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups: Map<string, string> } | Refused> {
+  const texts = new Map<string, string | null>()
+  for (const file of files) {
+    const text = await ctx.deps.fs.readText(file)
+    if (versionOf(text) !== (ctx.versions[file] ?? '')) return CHANGED
+    texts.set(file, text)
+  }
+  const backups = new Map<string, string>()
+  for (const [file, text] of texts) {
+    if (text !== null) backups.set(file, await backUp(ctx.deps.fs, ctx.paths.backups, file, text, ctx.clock))
+  }
+  return { ok: true, backups }
+}
+
+/** Runs `gemini <argv>` (never a shell) in `cwd`; a failure becomes a refusal naming the command. */
+async function gemini(ctx: Context, argv: string[], cwd: string | null, timeoutMs?: number): Promise<{ ok: true; output: string } | Refused> {
+  const result = await ctx.deps.exec.run('gemini', argv, cwd, timeoutMs ? { timeoutMs } : undefined)
+  if (!result.ok) return refuse('cli', `gemini ${argv.join(' ')} failed: ${tail(result.output) || 'no output'}`)
+  return { ok: true, output: result.output }
+}
+
+const unchanged = (argv: string[], file: string, output: string, say: (path: string) => string) =>
+  refuse('cli', `gemini ${argv.join(' ')} did not change ${say(file)}: ${tail(output) || 'no output'}`)
+
+const restoreOf = (backup: string | undefined): Action | undefined => (backup ? { type: 'restore', name: backup.slice(backup.lastIndexOf('/') + 1) } : undefined)
+
+/** Every file this app may change for Gemini CLI: the ones the CLI writes for the actions it offers. */
+const writable = (paths: GeminiPaths, setup: Setup) => [paths.settings, ...setup.projects.map(projectSettings), paths.enablement, paths.mcpEnablement]
+
+export async function geminiAction(deps: ProviderDeps, paths: GeminiPaths, request: ActionRequest): Promise<ActionResult> {
+  const ctx: Context = { deps, paths, clock: deps.clock ?? (() => new Date()), versions: request.versions, say: (path) => tilde(paths.home, path) }
+  const { action } = request
+  const setup = await readSetup(deps.fs, paths)
+
+  if (action.type === 'snapshot') {
+    const backups: string[] = []
+    for (const file of writable(paths, setup)) {
+      const text = await deps.fs.readText(file)
+      if (text !== null) backups.push(await backUp(deps.fs, paths.backups, file, text, ctx.clock))
+    }
+    return done(`Backed up ${backups.length} Gemini CLI settings file${backups.length === 1 ? '' : 's'}.`)
+  }
+  if (action.type === 'restore') {
+    const target = isTrashName(action.name) ? null : backupTarget(paths.backups, action.name)
+    if (target === null) return refuse('unknown-backup', `${action.name} is not a known backup.`)
+    const allowed = writable(paths, setup)
+    const restored = await restoreFile(deps.fs, paths.backups, { name: action.name, version: request.versions[target] ?? '' }, ctx.clock, async (file) =>
+      allowed.includes(file) ? null : refuse('refused', `${ctx.say(file)} is not a file this app changes for Gemini CLI.`)
+    )
+    if (!restored.ok) return restored
+    return done(`Restored ${ctx.say(target)} from its backup.`, restoreOf(restored.backup))
+  }
+
+  const key = (action as { key?: unknown }).key
+  const ref = typeof key === 'string' ? setup.refs.get(key) : undefined
+  if (ref === undefined || typeof key !== 'string') return GONE
+
+  if (ref.kind === 'plugins') {
+    const { extension, project } = ref
+    const named = optionLikeRefusal(extension.name, 'The extension name')
+    if (named) return refuse('refused', named.output)
+    if (action.type === 'setEnabled') return toggleExtension(ctx, setup, key, extension, project, ref.enabled, action.enabled)
+    if (action.type === 'uninstall' && project === null) return uninstallExtension(ctx, extension)
+    if (action.type === 'update' && project === null) return updateExtension(ctx, extension)
+    return refuse('unsupported', `Gemini CLI cannot do "${action.type}" on ${extension.name} there; use its Global item.`)
+  }
+  if (ref.kind === 'mcp') {
+    const { server } = ref
+    const named = optionLikeRefusal(server.name, 'The server name')
+    if (named) return refuse('refused', named.output)
+    const place = setup.places.find((p) => p.file === server.file)
+    if (place?.broken) return refuse('unreadable', `${ctx.say(server.file)} is not valid JSON; it was left untouched.`)
+    if (action.type === 'setEnabled') return toggleMcp(ctx, key, server, ref.blocked, ref.enabled, action.enabled)
+    if (action.type === 'remove') return removeMcp(ctx, server)
+    if (action.type === 'move') return moveMcp(ctx, setup, server, action.to, action.copy)
+  }
+  return refuse('unsupported', `Gemini CLI cannot do "${action.type}" on that item here.`)
+}
+
+// ------------------------------------------------------------------------------------------------- extensions
+
+async function toggleExtension(ctx: Context, setup: Setup, key: string, extension: Extension, project: string | null, current: boolean, enabled: boolean) {
+  const { paths } = ctx
+  const folder = project ?? paths.home
+  const where = project === null ? 'globally' : `in ${ctx.say(project)}`
+  if (current === enabled) return done(`${extension.name} is already ${enabled ? 'on' : 'off'} ${where}.`)
+  if ((await objectAt(ctx.deps, paths.enablement, false)) === null) return refuse('unreadable', `${ctx.say(paths.enablement)} is not valid JSON; it was left untouched.`)
+  const guarded = await guard(ctx, [paths.enablement])
+  if (!guarded.ok) return guarded
+  // `--scope user` writes a rule for the home folder, `--scope workspace` one for the folder it runs in.
+  const argv = ['extensions', enabled ? 'enable' : 'disable', '--scope', project === null ? 'user' : 'workspace', extension.name]
+  const ran = await gemini(ctx, argv, project)
+  if (!ran.ok) return ran
+  const after = await objectAt(ctx.deps, paths.enablement, false)
+  if (after === null || extensionEnabled(after, extension.name, folder) !== enabled) return unchanged(argv, paths.enablement, ran.output, ctx.say)
+  // A rule for a folder replaces the rules of the folders inside it (Override.isChildOf).
+  const cleared = setup.projects.filter(
+    (other) => other !== project && rulesFor(setup.enablement, extension.name, other).length > 0 && rulesFor(after, extension.name, other).length === 0
+  )
+  const warning = cleared.length > 0 ? `Gemini CLI also cleared the ${extension.name} override in ${cleared.map(ctx.say).join(', ')}.` : undefined
+  return done(`Turned ${extension.name} ${enabled ? 'on' : 'off'} ${where}. Restart Gemini CLI sessions to apply it.`, { type: 'setEnabled', key, enabled: !enabled }, warning)
+}
+
+async function uninstallExtension(ctx: Context, extension: Extension) {
+  const guarded = await guard(ctx, [ctx.paths.enablement])
+  if (!guarded.ok) return guarded
+  const argv = ['extensions', 'uninstall', extension.name]
+  const ran = await gemini(ctx, argv, null)
+  if (!ran.ok) return ran
+  if ((await ctx.deps.fs.realPath(extension.dir)) !== null) return unchanged(argv, extension.dir, ran.output, ctx.say)
+  const source = extension.install.source
+  const again = source ? ` To install it again: gemini extensions install ${source.startsWith('/') ? source : redactUrl(source)}` : ''
+  return done(`Uninstalled ${extension.name}.${again}`)
+}
+
+async function updateExtension(ctx: Context, extension: Extension) {
+  const { type, source } = extension.install
+  if (source === null || (type !== 'git' && type !== 'github-release')) {
+    return refuse('unsupported', `${extension.name} was installed from ${type ?? 'an unknown source'}; Gemini CLI updates only git and GitHub release extensions.`)
+  }
+  const guarded = await guard(ctx, [ctx.paths.enablement])
+  if (!guarded.ok) return guarded
+  const argv = ['extensions', 'update', extension.name]
+  const ran = await gemini(ctx, argv, null, 120_000)
+  if (!ran.ok) {
+    return refuse('cli', `${ran.message} If the update asks to approve new permissions, run gemini extensions update ${extension.name} in a terminal.`)
+  }
+  const manifest = await objectAt(ctx.deps, `${extension.dir}/gemini-extension.json`, false)
+  const version = manifest !== null && typeof manifest.version === 'string' ? manifest.version : null
+  if (version !== null && version !== extension.version) return done(`Updated ${extension.name} from ${extension.version ?? '?'} to ${version}.`)
+  if (/up to date|No extensions to update/i.test(ran.output)) return done(`${extension.name} is already up to date.`)
+  return refuse('cli', `gemini ${argv.join(' ')} did not update ${extension.name}: ${tail(ran.output) || 'no output'}`)
+}
+
+// ------------------------------------------------------------------------------------------------------- MCP
+
+const mcpState = async (ctx: Context, name: string) => {
+  const state = await objectAt(ctx.deps, ctx.paths.mcpEnablement, false)
+  if (state === null) return null
+  const entry = state[name.toLowerCase().trim()]
+  return !(isObject(entry) && entry.enabled === false)
+}
+
+async function toggleMcp(ctx: Context, key: string, server: McpServer, blocked: string | null, current: boolean, enabled: boolean) {
+  const { paths } = ctx
+  if (enabled && blocked !== null) {
+    return refuse('refused', `${server.name} is kept off by ${blocked} in settings.json; this app does not edit that list.`)
+  }
+  if (current === enabled) return done(`${server.name} is already ${enabled ? 'on' : 'off'}.`)
+  if ((await mcpState(ctx, server.name)) === null) return refuse('unreadable', `${ctx.say(paths.mcpEnablement)} is not valid JSON; it was left untouched.`)
+  const guarded = await guard(ctx, [paths.mcpEnablement])
+  if (!guarded.ok) return guarded
+  // The CLI looks the name up in the settings of the folder it runs in, so a project's server runs there.
+  const argv = ['mcp', enabled ? 'enable' : 'disable', server.name]
+  const ran = await gemini(ctx, argv, server.project)
+  if (!ran.ok) return ran
+  if ((await mcpState(ctx, server.name)) !== enabled) return unchanged(argv, paths.mcpEnablement, ran.output, ctx.say)
+  return done(
+    `Turned ${server.name} ${enabled ? 'on' : 'off'}.`,
+    { type: 'setEnabled', key, enabled: !enabled },
+    'Gemini CLI turns MCP servers on and off by name, everywhere: every server with this name follows.'
+  )
+}
+
+const scopeArg = (project: string | null) => (project === null ? 'user' : 'project')
+
+const hasServer = async (ctx: Context, file: string, name: string) => {
+  const settings = await objectAt(ctx.deps, file, true)
+  return settings !== null && isObject(settings.mcpServers) && isObject(settings.mcpServers[name])
+}
+
+async function removeMcp(ctx: Context, server: McpServer) {
+  const guarded = await guard(ctx, [server.file])
+  if (!guarded.ok) return guarded
+  const argv = ['mcp', 'remove', '--scope', scopeArg(server.project), server.name]
+  const ran = await gemini(ctx, argv, server.project)
+  if (!ran.ok) return ran
+  if (await hasServer(ctx, server.file, server.name)) return unchanged(argv, server.file, ran.output, ctx.say)
+  return done(`Removed ${server.name} from ${ctx.say(server.file)}.`, restoreOf(guarded.backups.get(server.file)))
+}
+
+/** `gemini mcp add` for this server's config; moveRefusal() already proved every key can be passed. */
+function addArgv(server: McpServer, project: string | null): string[] {
+  const { config } = server
+  const transport = transportOf(config)
+  const options = [
+    ...(typeof config.timeout === 'number' ? [`--timeout=${config.timeout}`] : []),
+    ...(config.trust === true ? ['--trust'] : []),
+    ...(typeof config.description === 'string' && config.description !== '' ? [`--description=${config.description}`] : [])
+  ]
+  const args: string[] = Array.isArray(config.args) ? config.args : []
+  const tail = transport === 'stdio' ? [config.command, ...(args.length > 0 ? ['--', ...args] : [])] : [config.url]
+  return ['mcp', 'add', '--scope', scopeArg(project), '--transport', transport, ...options, server.name, ...tail]
+}
+
+async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { project: string | null; scope?: string }, copy: boolean) {
+  const destination = to?.project ?? null
+  const place = destination === null ? 'Global' : ctx.say(destination)
+  if (destination !== null && !setup.projects.includes(destination)) return refuse('unknown-project', `${destination} is not a project Gemini CLI knows.`)
+  if (destination !== null && to.scope === 'local') {
+    return refuse('refused', 'Gemini CLI has no only-me settings for a project: its .gemini/settings.json is shared. Choose Team.')
+  }
+  if (destination === server.project) return refuse('same-place', `"${server.name}" is already there.`)
+  const notMovable = moveRefusal(server.config)
+  if (notMovable !== null) return refuse('not-movable', notMovable)
+  const target = transportOf(server.config) === 'stdio' ? server.config.command : server.config.url
+  const optionLike = optionLikeRefusal(String(target), 'The command or url')
+  if (optionLike) return refuse('refused', optionLike.output)
+  const file = settingsOf(ctx.paths, destination)
+  const destinationPlace = setup.places.find((p) => p.file === file)
+  if (destinationPlace?.broken) return refuse('unreadable', `${ctx.say(file)} is not valid JSON; it was left untouched.`)
+  if (await hasServer(ctx, file, server.name)) return refuse('exists', `${place} already has an MCP server named ${server.name}. Rename or remove one of them first.`)
+
+  const guarded = await guard(ctx, copy ? [file] : [file, server.file])
+  if (!guarded.ok) return guarded
+  const add = addArgv(server, destination)
+  const added = await gemini(ctx, add, destination)
+  if (!added.ok) return added
+  if (!(await hasServer(ctx, file, server.name))) return unchanged(add, file, added.output, ctx.say)
+  const destinationKey = itemKey('mcp', destination, server.name)
+  if (copy) return done(`Copied ${server.name} to ${place}.`, { type: 'remove', key: destinationKey })
+
+  const remove = ['mcp', 'remove', '--scope', scopeArg(server.project), server.name]
+  const removed = await gemini(ctx, remove, server.project)
+  const back: Action = { type: 'move', key: destinationKey, to: { project: server.project, scope: 'project' }, copy: false }
+  if (!removed.ok || (await hasServer(ctx, server.file, server.name))) {
+    const why = removed.ok ? tail(removed.output) || 'no output' : removed.message
+    return done(`Copied ${server.name} to ${place}.`, { type: 'remove', key: destinationKey }, `It is still in ${ctx.say(server.file)}: ${why}`)
+  }
+  return done(`Moved ${server.name} to ${place}.`, back)
+}

@@ -2,12 +2,14 @@
 import { claudeProvider } from './claude/index.ts'
 import { codexProvider } from './codex/index.ts'
 import { copilotProvider } from './copilot/index.ts'
+import { geminiProvider } from './gemini/index.ts'
 import { assertUniqueIds, lookupProvider, type ProviderLookup } from './router.ts'
 import type { AgentProvider } from './types.ts'
 
 export const PROVIDERS: readonly AgentProvider[] = Object.freeze([
   claudeProvider(),
   codexProvider(),
+  geminiProvider(),
   copilotProvider()
 ])
 
