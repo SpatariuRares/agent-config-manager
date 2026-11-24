@@ -1,7 +1,8 @@
 // Runs plugin and skill updates through their official CLIs and reports what changed, read back from the
 // files those CLIs own. Nothing here accepts a marketplace-declared command on the user's behalf.
 import { isObject, type Json } from './inventory.ts'
-import type { ClaudePaths, FileSystem, PluginCli } from './ports.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import type { ClaudePaths, PluginCli } from './ports.ts'
 import { readInstalls, readSkillLock } from './update-sources.ts'
 
 export interface VersionChange {

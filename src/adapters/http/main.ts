@@ -3,8 +3,9 @@
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import { claudeCli } from '../claude-cli.ts'
-import { defaultClaudePaths, nodeFileSystem } from '../node-fs.ts'
+import { homedir } from 'node:os'
+import { nodeCommandRunner } from '../claude-cli.ts'
+import { nodeFileSystem } from '../node-fs.ts'
 import { fetchHttp } from '../updates.ts'
 import { createConfigServer } from './server.ts'
 
@@ -18,7 +19,7 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 
 const token = randomBytes(24).toString('base64url')
 const server = createConfigServer({
-  deps: { fs: nodeFileSystem, cli: claudeCli(), paths: defaultClaudePaths(), http: fetchHttp() },
+  deps: { fs: nodeFileSystem, exec: nodeCommandRunner(), home: homedir(), http: fetchHttp() },
   panelDir: join(import.meta.dirname, '..', '..', '..', 'panel'),
   token
 })

@@ -1,4 +1,7 @@
 // The whole setup per scope: every class globally and in each known project. Read-only.
+import type { EntryKind } from '../../core/entries.ts'
+import { sameFolder } from '../../core/paths.ts'
+import type { FileSystem } from '../../core/ports.ts'
 import {
   hookEntries,
   isObject,
@@ -17,10 +20,12 @@ import {
   type ProjectScope,
   type Skill
 } from './inventory.ts'
-import type { ClaudePaths, FileSystem } from './ports.ts'
+import type { ClaudePaths } from './ports.ts'
+
+export { sameFolder } from '../../core/paths.ts'
+export type { EntryKind } from '../../core/entries.ts'
 
 export type Scope = 'user' | ProjectScope
-export type EntryKind = 'skills' | 'agents'
 
 /** Where an item lives: global (project null, scope user) or one project's team or only-me file. */
 export interface Place {
@@ -68,12 +73,6 @@ export const mcpFile = (project: string) => `${project}/.mcp.json`
 /** The settings file of a place: user settings, or a project's team or only-me file. */
 export const placeFile = (paths: ClaudePaths, place: Place) =>
   place.project === null ? settingsFile(paths) : projectSettingsFile(place.project, place.scope === 'project' ? 'project' : 'local')
-
-/** Whether two folders are the same on disk (aliases and symlinks count); false when either is missing. */
-export async function sameFolder(fs: FileSystem, a: string, b: string): Promise<boolean> {
-  const real = await fs.realPath(a)
-  return real !== null && real === (await fs.realPath(b))
-}
 
 export async function readSetup(fs: FileSystem, paths: ClaudePaths): Promise<Setup> {
   const inventory = await readInventory(fs, paths)

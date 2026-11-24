@@ -5,7 +5,8 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
-import { fakeCli, fakeFs, paths } from '../../core/test-support.ts'
+import { fakeFs } from '../../core/test-support.ts'
+import { fakeExec } from '../../providers/testing.ts'
 import { createConfigServer } from './server.ts'
 
 const TOKEN = 'test-token-0123456789'
@@ -22,7 +23,7 @@ before(async () => {
   await writeFile(join(panelDir, 'index.html'), '<!doctype html><title>panel</title>')
   await writeFile(join(panelDir, 'app.js'), 'export {}')
   const server = createConfigServer({
-    deps: { fs, cli: fakeCli(), paths, http: { getJson: async () => ({ ok: false as const, status: null, error: 'offline', rateLimited: false }) } },
+    deps: { fs, exec: fakeExec(), home: '/home', http: { getJson: async () => ({ ok: false as const, status: null, error: 'offline', rateLimited: false }) } },
     panelDir,
     token: TOKEN
   })
@@ -116,7 +117,7 @@ test('runs an action and answers with its result and the fresh view', async () =
   const view = await (await api('view.get')).json()
   const key = view.view.items.find((i: { name: string }) => i.name === 'a').key
   const answer = await api('action.run', {
-    body: JSON.stringify({ action: { type: 'setEnabled', key, enabled: false }, versions: view.view.versions })
+    body: JSON.stringify({ agent: 'claude', action: { type: 'setEnabled', key, enabled: false }, versions: view.view.versions })
   })
   assert.equal(answer.status, 200)
   const body = await answer.json()
@@ -125,7 +126,7 @@ test('runs an action and answers with its result and the fresh view', async () =
 })
 
 test('refuses to start without a token', () => {
-  assert.throws(() => createConfigServer({ deps: { fs, cli: fakeCli(), paths, http: { getJson: async () => ({ ok: false as const, status: null, error: '', rateLimited: false }) } }, panelDir, token: '' }), /token/)
+  assert.throws(() => createConfigServer({ deps: { fs, exec: fakeExec(), home: '/home', http: { getJson: async () => ({ ok: false as const, status: null, error: '', rateLimited: false }) } }, panelDir, token: '' }), /token/)
 })
 
 test('accepts application/json exactly, with or without parameters, in any case', async () => {
@@ -146,4 +147,33 @@ test('serves the panel only under this server as Host, and never in a frame', as
   const page = await fetch(`${base}/`)
   assert.equal(page.headers.get('x-frame-options'), 'DENY')
   assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+})
+
+test('view.get answers for the agent it names, with every agent for the switcher; an unknown agent is an error', async () => {
+  const body = await (await api('view.get', { body: JSON.stringify({ agent: 'claude' }) })).json()
+  assert.equal(body.ok, true)
+  assert.equal(body.view.agent, 'claude')
+  assert.deepEqual(body.view.agents.map((a: { id: string; detected: boolean }) => [a.id, a.detected]), [['claude', true]])
+  assert.ok(body.view.items.every((i: { agent: string }) => i.agent === 'claude'))
+  assert.deepEqual(await (await api('view.get', { body: JSON.stringify({ agent: 'nope' }) })).json(), { ok: false, error: 'Unknown agent "nope".' })
+})
+
+test('action.run refuses a request that names no agent or an unknown one, and changes nothing', async () => {
+  const view = await (await api('view.get')).json()
+  const key = view.view.items.find((i: { name: string }) => i.name === 'a').key
+  const before = fs.files['/home/.claude/settings.json']
+  for (const agent of [undefined, 'nope']) {
+    const answer = await api('action.run', { body: JSON.stringify({ agent, action: { type: 'setEnabled', key, enabled: true }, versions: view.view.versions }) })
+    assert.equal(answer.status, 200)
+    const body = await answer.json()
+    assert.equal(body.result.ok, false)
+    assert.equal(body.result.reason, 'unknown-agent')
+  }
+  assert.equal(fs.files['/home/.claude/settings.json'], before)
+})
+
+test('updates.check answers for the agent it names', async () => {
+  const body = await (await api('updates.check', { body: JSON.stringify({ agent: 'nope' }) })).json()
+  assert.deepEqual(body.errors, ['Unknown agent "nope".'])
+  assert.deepEqual(body.statuses, {})
 })

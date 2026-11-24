@@ -1,7 +1,8 @@
 // Moves, copies and removes MCP servers. Only through the official CLI: ~/.claude.json is rewritten by
 // Claude Code all the time, so it is read here but never written. Files the CLI changes are backed up first.
 import { isObject, knownProjects, versionOf, type Json } from './inventory.ts'
-import type { ClaudePaths, FileSystem, PluginCli } from './ports.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import type { ClaudePaths, PluginCli } from './ports.ts'
 import { mcpFile, type Place } from './setup.ts'
 import { backUp, type Clock } from './toggle.ts'
 

@@ -1,5 +1,5 @@
 // The localhost transport: serves the panel and answers the panel contract (../view.ts) as JSON.
-// It changes the user's Claude Code setup, and any web page the user opens can send requests to
+// It changes the user's coding-agent setup, and any web page the user opens can send requests to
 // 127.0.0.1, so every API request must carry the session token in a custom header (which a cross-site
 // page cannot send without a CORS preflight this server never grants), name this server as its Host
 // (no DNS rebinding), and come from no other origin.
@@ -7,10 +7,9 @@ import { timingSafeEqual } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, join, sep } from 'node:path'
-import { actionQueue, buildView, runAction, type BackendDeps } from '../backend.ts'
-import { checkUpdates } from '../updates.ts'
+import { actionQueue, buildView, checkUpdates, runAction, type BackendDeps } from '../backend.ts'
 import type { Http } from '../../core/ports.ts'
-import type { ActionRequest } from '../view.ts'
+import type { ActionRequest, AgentRequest } from '../view.ts'
 
 export interface ConfigServerOptions {
   deps: BackendDeps & { http: Http }
@@ -34,10 +33,11 @@ export function createConfigServer({ deps, panelDir, token }: ConfigServerOption
   // Changes run one at a time: each reads files, checks their versions, then writes.
   const serialized = actionQueue()
   const handlers: Record<string, (input: unknown) => Promise<unknown>> = {
-    'view.get': () => buildView(deps),
+    // Each request names its agent; the router refuses unknown agents and undeclared actions.
+    'view.get': (input) => buildView(deps, input as AgentRequest),
     'action.run': (input) => serialized(() => runAction(deps, input as ActionRequest)),
     // A check only reads (files, GitHub, npm), so it runs outside the queue; only on demand.
-    'updates.check': () => checkUpdates(deps)
+    'updates.check': (input) => checkUpdates(deps, input as AgentRequest)
   }
 
   const server = createServer(async (request, response) => {

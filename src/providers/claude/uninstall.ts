@@ -1,7 +1,8 @@
 // Removes a plugin through the official CLI, which owns the plugin files. There is no undo:
 // the CLI deletes the plugin's files, so the way back is `claude plugin install <id>`.
 import { projectSettingsFile, settingsFile } from './inventory.ts'
-import type { ClaudePaths, FileSystem, PluginCli } from './ports.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import type { ClaudePaths, PluginCli } from './ports.ts'
 import { backUp, type Clock } from './toggle.ts'
 
 export type UninstallResult =

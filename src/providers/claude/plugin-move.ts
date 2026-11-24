@@ -1,7 +1,8 @@
 // Moves or copies a plugin's on/off value between global and projects, through the versioned writes
 // of toggle.ts. To a project: an override there; to global: the global switch.
 import { settingsFile, projectSettingsFile, type ProjectScope } from './inventory.ts'
-import type { ClaudePaths, FileSystem } from './ports.ts'
+import type { FileSystem } from '../../core/ports.ts'
+import type { ClaudePaths } from './ports.ts'
 import type { Place } from './setup.ts'
 import { isKnownPlugin, setPluginEnabled, setProjectPluginState, updateJsonFile, type Clock, type WriteResult } from './toggle.ts'
 
