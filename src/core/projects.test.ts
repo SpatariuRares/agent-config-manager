@@ -48,3 +48,14 @@ test('a plugin only set in a project still shows up', async () => {
     [{ id: 'solo@m', enabled: false, overrides: [{ project: '/work/shop', scope: 'local', enabled: true }] }]
   )
 })
+
+test('the home folder as a project does not read the user settings twice as an override', async () => {
+  const fs = fakeFs({
+    '/home/.claude/settings.json': JSON.stringify({ enabledPlugins: { 'a@m': true } }),
+    '/home/.claude.json': JSON.stringify({ projects: { '/home': {} } }),
+    '/home/.claude/settings.local.json': JSON.stringify({ enabledPlugins: { 'a@m': false } })
+  })
+  const { plugins, projects } = await readInventory(fs, { claudeDir: '/home/.claude', userConfigFile: '/home/.claude.json' })
+  assert.deepEqual(projects, ['/home'])
+  assert.deepEqual(plugins[0].overrides, [{ project: '/home', scope: 'local', enabled: false }])
+})

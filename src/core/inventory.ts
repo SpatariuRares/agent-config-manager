@@ -91,6 +91,8 @@ export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise
   for (const project of projects) {
     for (const scope of ['project', 'local'] as const) {
       const file = projectSettingsFile(project, scope)
+      // For the home folder, the "project" file is the user settings file itself.
+      if (file === settingsFile(paths)) continue
       versions[file] = versionOf(await fs.readText(file))
       for (const [id, enabled] of Object.entries((await readJson(fs, file, problems)).enabledPlugins ?? {})) {
         overrides.push({ id, project, scope, enabled: enabled === true })
