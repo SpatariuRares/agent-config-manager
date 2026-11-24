@@ -38,7 +38,9 @@ export async function readJson(fs: FileSystem, path: string, problems: string[] 
     problems.push(`${path}: expected a JSON object`)
     return {}
   } catch (error) {
-    problems.push(`${path}: ${(error as Error).message}`)
+    // Never quote the parser's message: it can echo the file's text, secrets included.
+    const at = /position (\d+)/.exec((error as Error).message)?.[1]
+    problems.push(`${path}: not valid JSON${at === undefined ? '' : ` (near character ${at})`}`)
     return {}
   }
 }
