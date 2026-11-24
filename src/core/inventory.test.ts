@@ -1,24 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readInventory } from './inventory.ts'
-import type { FileSystem } from './ports.ts'
-
-const paths = { claudeDir: '/home/.claude', userConfigFile: '/home/.claude.json' }
-
-function fakeFs(files: Record<string, string>): FileSystem {
-  return {
-    async readText(path) {
-      return files[path] ?? null
-    },
-    async listEntries(dir) {
-      const prefix = `${dir}/`
-      const names = Object.keys(files)
-        .filter((path) => path.startsWith(prefix))
-        .map((path) => path.slice(prefix.length).split('/')[0])
-      return [...new Set(names)].sort()
-    }
-  }
-}
+import { fakeFs, paths } from './test-support.ts'
 
 const settings = {
   enabledPlugins: { 'github@official': true, 'slack@productivity': false },
@@ -50,10 +33,13 @@ const fs = fakeFs({
 
 test('lists plugins with their marketplace and enabled state', async () => {
   const { plugins } = await readInventory(fs, paths)
-  assert.deepEqual(plugins, [
-    { id: 'github@official', name: 'github', marketplace: 'official', enabled: true },
-    { id: 'slack@productivity', name: 'slack', marketplace: 'productivity', enabled: false }
-  ])
+  assert.deepEqual(
+    plugins.map(({ id, name, marketplace, enabled }) => ({ id, name, marketplace, enabled })),
+    [
+      { id: 'github@official', name: 'github', marketplace: 'official', enabled: true },
+      { id: 'slack@productivity', name: 'slack', marketplace: 'productivity', enabled: false }
+    ]
+  )
 })
 
 test('lists only skill folders that hold a SKILL.md, with their description', async () => {
@@ -90,7 +76,7 @@ test('flattens hooks into one row per command, keeping event and matcher', async
 
 test('an empty setup reads as an empty inventory, not an error', async () => {
   const inventory = await readInventory(fakeFs({}), paths)
-  assert.deepEqual(inventory, { plugins: [], skills: [], agents: [], mcpServers: [], hooks: [], problems: [] })
+  assert.deepEqual(inventory, { plugins: [], skills: [], agents: [], mcpServers: [], hooks: [], problems: [], settingsVersion: '', projects: [], versions: { '/home/.claude/settings.json': '' } })
 })
 
 test('a broken settings file is reported as a problem, the rest still loads', async () => {
@@ -118,4 +104,12 @@ test('reads multi-line YAML descriptions (>, >-, |) as one line of text', async 
     agents.map((a) => a.description),
     ['Spans two lines.', 'First line. Second line.']
   )
+})
+
+test('a malformed MCP entry is skipped instead of breaking the inventory', async () => {
+  const { mcpServers } = await readInventory(
+    fakeFs({ '/home/.claude.json': JSON.stringify({ mcpServers: { broken: null, ok: { command: 'x' } } }) }),
+    paths
+  )
+  assert.deepEqual(mcpServers, [{ name: 'ok', transport: 'stdio', target: 'x' }])
 })
