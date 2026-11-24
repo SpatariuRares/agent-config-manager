@@ -141,6 +141,17 @@ const supports = (kind, type) => !!currentAgent()?.supports?.[kind]?.includes(ty
 const supportsAny = (type) => Object.values(currentAgent()?.supports ?? {}).some((list) => list?.includes(type))
 /** Before the agents are known nothing is hidden, so the header does not jump on the first load. */
 const offers = (type) => !currentAgent() || supportsAny(type)
+/**
+ * The scopes a move or copy into a project may target for this class, default first (AgentInfo.projectScopes).
+ * Empty: items of this class never go into a project. A backend that predates projectScopes gets Claude's model.
+ */
+const projectScopes = (kind) => {
+  const declared = currentAgent()?.projectScopes
+  if (!declared) return hasLocalScope(kind) ? ['local', 'project'] : ['project']
+  return (declared[kind] ?? []).filter((scope) => scope === 'local' || scope === 'project')
+}
+/** The item's on/off value: a plugin's own, else the item's (e.g. a Gemini CLI MCP server); undefined when it has none. */
+const enabledOf = (item) => item.plugin?.enabled ?? item.enabled
 
 /** Shows the preferred tab when this agent has it, else the agent's first class. */
 function settleTab() {
@@ -282,8 +293,10 @@ function teamOffer(item, project) {
 }
 
 function moveItem(item, project, scope, copy, opts = {}) {
-  const to = project === null ? { project: null } : { project, scope: scope ?? (hasLocalScope(item.kind) ? 'local' : 'project') }
-  const offer = project !== null && to.scope === 'local' ? teamOffer(item, project) : undefined
+  const scopes = projectScopes(item.kind)
+  if (project !== null && !scopes.length) return
+  const to = project === null ? { project: null } : { project, scope: scope ?? scopes[0] }
+  const offer = project !== null && to.scope === 'local' && scopes.includes('project') ? teamOffer(item, project) : undefined
   return run({ type: 'move', key: item.key, to, copy }, { ...opts, describe: offer })
 }
 
@@ -608,7 +621,7 @@ function renderItem(item) {
   return h(
     'li',
     {
-      class: `item kind-${item.kind}${working ? ' is-working' : ''}${item.plugin && !item.plugin.enabled ? ' is-off' : ''}`,
+      class: `item kind-${item.kind}${working ? ' is-working' : ''}${enabledOf(item) === false ? ' is-off' : ''}`,
       'data-key': item.key,
       draggable: draggable ? 'true' : 'false',
       'aria-busy': working ? 'true' : null,
@@ -818,12 +831,11 @@ function itemTrail(item, busy) {
       ),
     )
   }
-  if (item.plugin && !supports(item.kind, 'setEnabled')) {
+  const on = enabledOf(item)
+  if (typeof on === 'boolean' && !supports(item.kind, 'setEnabled')) {
     // Read-only: the state is shown, never a switch that would be refused.
-    const on = item.plugin.enabled
-    parts.push(h('span', { class: 'onoff', title: `${on ? 'On' : 'Off'}; ${agentName()} plugins are read-only here` }, on ? 'On' : 'Off'))
-  } else if (item.plugin) {
-    const on = item.plugin.enabled
+    parts.push(h('span', { class: 'onoff', title: `${on ? 'On' : 'Off'}; ${agentName()} ${noun(item.kind, 2)} are read-only here` }, on ? 'On' : 'Off'))
+  } else if (typeof on === 'boolean') {
     parts.push(
       h(
         'button',
@@ -1007,10 +1019,11 @@ function renderNotice() {
 
 // ---------- Menus and picker ----------
 
-function destinations() {
+/** Global, plus every project when items of this class can go into one. */
+function destinations(kind) {
   return [
     { project: null, label: 'Global', detail: 'All projects' },
-    ...allProjects(state.view).map((p) => ({ project: p, label: projectName(p), detail: tildify(p) })),
+    ...(projectScopes(kind).length ? allProjects(state.view).map((p) => ({ project: p, label: projectName(p), detail: tildify(p) })) : []),
   ]
 }
 
@@ -1020,10 +1033,10 @@ function openPickerFor(item, anchor, copy) {
   openPicker(anchor, {
     title: `${verb} ${label} to`,
     verb,
-    destinations: destinations(),
-    withScope: hasLocalScope(item.kind),
+    destinations: destinations(item.kind),
+    scopes: projectScopes(item.kind),
     isOwnPlace: (project, scope) =>
-      sameProject(project, item.project) && (project === null || !hasLocalScope(item.kind) || scope === item.scope),
+      sameProject(project, item.project) && (project === null || projectScopes(item.kind).length < 2 || scope === item.scope),
     onPick: (project, scope) => moveItem(item, project, scope, copy, { focusNotice: true }),
   })
 }
@@ -1137,7 +1150,7 @@ document.addEventListener('click', (e) => {
       else state.expanded.add(key)
       return render()
     case 'toggle':
-      return item && run({ type: 'setEnabled', key, enabled: !item.plugin.enabled })
+      return item && typeof enabledOf(item) === 'boolean' && run({ type: 'setEnabled', key, enabled: !enabledOf(item) })
     case 'clear-override':
       return item && run({ type: 'clearOverride', key })
     case 'menu':
@@ -1219,7 +1232,7 @@ function zoneProject(zone) {
 }
 
 function renderStrip(item) {
-  const chips = destinations().map((d) => {
+  const chips = destinations(item.kind).map((d) => {
     const own = sameProject(d.project, item.project)
     return h(
       'li',
@@ -1270,7 +1283,7 @@ function endDrag() {
   if (!state.drag) return
   state.drag.source?.classList.remove('is-dragging')
   state.drag.zone?.classList.remove('is-drop-target')
-  for (const zone of document.querySelectorAll('.is-own-place')) zone.classList.remove('is-own-place')
+  for (const zone of document.querySelectorAll('.is-own-place, .is-no-drop')) zone.classList.remove('is-own-place', 'is-no-drop')
   state.drag = null
   delete root.dataset.dragMode
   root.classList.remove('is-dragging')
@@ -1294,8 +1307,11 @@ document.addEventListener('dragstart', (e) => {
   renderStrip(item)
   els.strip.hidden = false
   els.notice.classList.add('is-hidden-by-drag')
+  // A project is no target for a class that never goes into one (no projectScopes for it).
+  const intoProjects = projectScopes(item.kind).length > 0
   for (const zone of document.querySelectorAll('[data-drop]')) {
     if (sameProject(zoneProject(zone), item.project)) zone.classList.add('is-own-place')
+    else if (!intoProjects && zoneProject(zone) !== null) zone.classList.add('is-no-drop')
   }
   setDragMode(e.altKey)
 })
@@ -1305,7 +1321,7 @@ function aimDrop(e) {
   if (!state.drag) return
   setDragMode(e.altKey)
   const zone = e.target.closest?.('[data-drop]')
-  if (!zone || zone.classList.contains('is-own-place')) {
+  if (!zone || zone.classList.contains('is-own-place') || zone.classList.contains('is-no-drop')) {
     setActiveZone(null)
     e.dataTransfer.dropEffect = 'none'
     return
@@ -1332,7 +1348,7 @@ document.addEventListener('drop', (e) => {
   const copy = e.altKey || e.dataTransfer.dropEffect === 'copy' || state.drag.copy === true
   e.preventDefault()
   endDrag()
-  if (!zone || !item || zone.classList.contains('is-own-place')) return
+  if (!zone || !item || zone.classList.contains('is-own-place') || zone.classList.contains('is-no-drop')) return
   const project = zoneProject(zone)
   if (sameProject(project, item.project)) return
   moveItem(item, project, undefined, copy)

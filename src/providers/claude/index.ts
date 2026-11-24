@@ -1,5 +1,5 @@
 // The Claude Code provider: the behavior this app always had, behind the AgentProvider interface.
-import type { ActionType, AgentInfo, Kind } from '../../adapters/view.ts'
+import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider, type ProviderDeps } from '../types.ts'
 import { CLAUDE, claudeAction, claudeView } from './actions.ts'
 import { claudeCliOver } from './cli.ts'
@@ -13,6 +13,19 @@ export const CLAUDE_SUPPORTS: Record<Kind, ActionType[]> = {
   agents: ['move', 'remove', 'restore', 'snapshot'],
   mcp: ['move', 'remove', 'update', 'updateAll', 'restore', 'snapshot'],
   hooks: ['move', 'remove', 'restore', 'snapshot']
+}
+
+/**
+ * Where a move into a project may go. Plugins, MCP servers and hooks have an only-me file there
+ * (.claude/settings.local.json, ~/.claude.json) next to the team one, and only me stays the default.
+ * Skills and agents have no scope: they always land in the project's .claude/ folder (moveEntry ignores it).
+ */
+export const CLAUDE_PROJECT_SCOPES: Record<Kind, ProjectScope[]> = {
+  plugins: ['local', 'project'],
+  skills: ['project'],
+  agents: ['project'],
+  mcp: ['local', 'project'],
+  hooks: ['local', 'project']
 }
 
 export interface ClaudeOverrides {
@@ -45,6 +58,7 @@ export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
         detected,
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(CLAUDE_SUPPORTS).map(([kind, actions]) => [kind, [...actions]])),
+        projectScopes: Object.fromEntries(Object.entries(CLAUDE_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...scopes]])),
         configHome: '~/.claude'
       }
     },

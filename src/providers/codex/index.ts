@@ -37,7 +37,7 @@
 //   CLI output would carry secrets (http_headers) and auth state into the panel.
 // - Skills and agent files: moved, copied and trashed through the toolkit (whole files and folders, no TOML edits).
 // - Plugins and hooks: read-only (see NOTE).
-import type { ActionType, AgentInfo, Kind } from '../../adapters/view.ts'
+import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
 import { codexAction } from './actions.ts'
 import { CODEX, codexPaths, readCodex } from './read.ts'
@@ -47,6 +47,15 @@ export const CODEX_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
   skills: ['move', 'remove', 'restore', 'snapshot'],
   agents: ['move', 'remove', 'restore', 'snapshot'],
   mcp: ['move', 'remove', 'snapshot']
+}
+
+/**
+ * Skills and agent files go to the project's own folders, which are shared (moveFile ignores the scope).
+ * MCP servers never go into a project: a project .codex/config.toml is never written (copyServer).
+ */
+export const CODEX_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
+  skills: ['project'],
+  agents: ['project']
 }
 
 export const CODEX_NOTE =
@@ -68,6 +77,7 @@ export function codexProvider(): AgentProvider {
         detected,
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(CODEX_SUPPORTS).map(([kind, actions]) => [kind, [...(actions ?? [])]])),
+        projectScopes: Object.fromEntries(Object.entries(CODEX_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
         configHome: '~/.codex',
         note: CODEX_NOTE
       }

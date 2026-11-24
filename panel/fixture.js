@@ -210,6 +210,8 @@ const AGENTS = [
       mcp: ['move', 'remove', 'update', 'updateAll', ...FILES],
       hooks: ['move', 'remove', ...FILES],
     },
+    // As the real provider: skills and agents always land in the project's .claude/ folder.
+    projectScopes: { plugins: ['local', 'project'], skills: ['project'], agents: ['project'], mcp: ['local', 'project'], hooks: ['local', 'project'] },
     configHome: '~/.claude',
   },
   {
@@ -221,6 +223,8 @@ const AGENTS = [
       skills: ['move', 'remove', ...FILES],
       mcp: ['move', 'remove', ...FILES],
     },
+    // As the real provider: skills go to the project's own folder; MCP servers never go into a project.
+    projectScopes: { skills: ['project'] },
     configHome: '~/.codex',
     note: 'Plugins, agents and hooks are read-only: this app does not edit config.toml or hooks.json yet.',
   },
@@ -231,8 +235,10 @@ const AGENTS = [
     kinds: ['plugins', 'mcp'],
     supports: {
       plugins: ['setEnabled', ...FILES],
-      mcp: ['move', 'remove', ...FILES],
+      mcp: ['move', 'remove', 'setEnabled', ...FILES],
     },
+    // As the real provider: a project's .gemini/settings.json is shared; there is no only-me file.
+    projectScopes: { mcp: ['project'] },
     configHome: '~/.gemini',
     note: 'Extensions show as plugins; turn them on and off here, install and update them with gemini extensions.',
   },
@@ -241,7 +247,9 @@ const AGENTS = [
     name: 'Copilot CLI',
     detected: false,
     kinds: ['plugins', 'skills', 'agents', 'mcp'],
-    supports: {},
+    // Not installed, so it backs nothing up; its moves go to a project's shared folders only, as the real provider.
+    supports: { skills: ['move', 'remove'], agents: ['move', 'remove'], mcp: ['move', 'remove'] },
+    projectScopes: { skills: ['project'], agents: ['project'], mcp: ['project'] },
     configHome: '~/.copilot',
   },
 ]
@@ -274,7 +282,8 @@ function geminiItems() {
     ext('security', '0.4.1', false),
     ext('code-review', '0.1.0', true),
     simple('mcp', 'github', '', null, 'user', { mcp: { transport: 'http', target: 'https://api.githubcopilot.com/mcp/' } }, a),
-    simple('mcp', 'context7', '', null, 'user', { mcp: { transport: 'stdio', target: npxContext7('2.2.5') } }, a),
+    // Its switch is `gemini mcp enable|disable`.
+    simple('mcp', 'context7', '', null, 'user', { enabled: true, mcp: { transport: 'stdio', target: npxContext7('2.2.5') } }, a),
     simple('mcp', 'playwright', '', P_STORE, 'project', { mcp: { transport: 'stdio', target: 'npx @playwright/mcp@latest' } }, a),
   ]
 }
@@ -376,7 +385,7 @@ function createStore(agent, { variant, now }) {
 
   function move(item, to, copy) {
     const project = to.project ?? null
-    const scope = project === null ? 'user' : item.kind === 'skills' || item.kind === 'agents' ? 'project' : (to.scope ?? 'local')
+    const scope = project === null ? 'user' : (to.scope ?? agent.projectScopes[item.kind][0])
     if (project === item.project && scope === item.scope) return fail('same_place', `${item.name} is already there.`)
     const undo = backupBefore(item.source)
     const verb = copy ? 'Copied' : 'Moved'
@@ -528,9 +537,10 @@ function createStore(agent, { variant, now }) {
         if (!item.movable) return fail('not_movable', item.notMovableReason ?? `${item.name} cannot be moved.`)
         return move(item, action.to, action.copy)
       case 'setEnabled': {
-        if (!item.plugin) return fail('invalid', 'Only plugins have a switch.')
+        if (typeof (item.plugin?.enabled ?? item.enabled) !== 'boolean') return fail('invalid', `${item.name} has no switch.`)
         backupBefore(item.source)
-        item.plugin.enabled = action.enabled
+        if (item.plugin) item.plugin.enabled = action.enabled
+        else item.enabled = action.enabled
         return {
           ok: true,
           message: `Turned ${action.enabled ? 'on' : 'off'} ${item.name} in ${where(item.project)}.`,
@@ -572,14 +582,23 @@ function createStore(agent, { variant, now }) {
     return find(action.key)?.kind ?? null
   }
 
-  /** Refuses what the agent does not support, as a real provider would, before touching anything. */
+  /** Refuses what the agent does not support, as the router does, before touching anything. */
   function refusal(action) {
     const kind = kindOf(action)
     const lists = kind ? [agent.supports[kind] ?? []] : Object.values(agent.supports)
-    if (lists.some((list) => list.includes(action.type))) return null
+    if (lists.some((list) => list.includes(action.type))) return scopeRefusal(kind, action)
     if (kind === null && action.key) return null // a missing item: run() reports it
     const what = kind ? `${kind === 'mcp' ? 'MCP servers' : kind}` : 'backups'
     return fail('unsupported', `${agent.name} does not support "${action.type}" for ${what} in this app.`)
+  }
+
+  /** A move into a project must use a scope the agent declared for the class (AgentInfo.projectScopes). */
+  function scopeRefusal(kind, action) {
+    if (action.type !== 'move' || typeof action.to?.project !== 'string') return null
+    const scopes = agent.projectScopes[kind] ?? []
+    if (!scopes.length) return fail('unsupported', `${agent.name} cannot put ${kind} into a project here.`)
+    if (action.to.scope === undefined || scopes.includes(action.to.scope)) return null
+    return fail('unsupported', `${agent.name} cannot put ${kind} into a project as "${action.to.scope}".`)
   }
 
   function act(input) {

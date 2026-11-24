@@ -133,6 +133,101 @@ test('actions the agent does not support are not offered', async ({ page }) => {
   expect(actions.map((r) => r.input.action.type)).toEqual(['setEnabled'])
 })
 
+const STORE = '/Users/you/code/storefront'
+const NOTES = '/Users/you/code/notes'
+
+/** Starts a real HTML5 drag of `source` and waits for the drop strip; the mouse stays down. */
+async function startDrag(page: Page, source: ReturnType<Page['locator']>) {
+  await page.setViewportSize({ width: 380, height: 1700 })
+  const from = (await source.boundingBox())!
+  await page.mouse.move(from.x + 24, from.y + 12)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 30, from.y + 24, { steps: 3 })
+  await expect(page.locator('#dropstrip')).toBeVisible()
+  await page.locator('#dropstrip').evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)))
+}
+
+async function dropOn(page: Page, target: ReturnType<Page['locator']>) {
+  const to = (await target.boundingBox())!
+  await page.mouse.move(to.x + to.width / 2, to.y + Math.min(to.height / 2, 16), { steps: 6 })
+  await page.mouse.up()
+  await expect(page.locator('#dropstrip')).toBeHidden()
+}
+
+const moves = async (page: Page) => (await requests(page)).filter((r) => r.name === 'action.run').map((r) => r.input.action)
+
+test('Gemini CLI offers only Team when an MCP server goes into a project, and a drop uses it', async ({ page }) => {
+  await open(page)
+  await pickAgent(page, 'Gemini CLI')
+  await tab(page, 'MCP').click()
+  await item(page, 'context7').getByRole('button', { name: 'Actions for context7' }).click()
+  await page.getByRole('menuitem', { name: 'Move to…' }).click()
+  const picker = page.getByRole('dialog', { name: 'Move context7 to' })
+  await expect(picker.getByRole('radio')).toHaveCount(0)
+  await expect(picker.locator('.picker-note')).toHaveText('In a project, this class is always shared with the team.')
+  await expect(picker.getByRole('option')).toHaveText([/Global/, /api-gateway/, /notes/, /storefront/])
+  await picker.getByRole('option', { name: /storefront/ }).click()
+  await expect(page.locator('#notice')).toContainText('Moved context7 to storefront.')
+  await expect(page.getByRole('button', { name: 'Make it a team item' })).toHaveCount(0)
+
+  await startDrag(page, item(page, 'github'))
+  await dropOn(page, page.locator(`#dropstrip .chip[data-drop="${NOTES}"]`))
+  await expect(page.locator('#notice')).toContainText('Moved github to notes.')
+  await expect(page.getByRole('button', { name: 'Make it a team item' })).toHaveCount(0)
+
+  expect((await moves(page)).map((action) => action.to)).toEqual([
+    { project: STORE, scope: 'project' },
+    { project: NOTES, scope: 'project' },
+  ])
+})
+
+// Copilot CLI has no class that moves but stays out of projects (and the fixture's Copilot is not installed),
+// so this is shown with Codex, whose MCP servers move to Global only.
+test('a class with no project scope has no project drop target and no project in Move to…', async ({ page }) => {
+  await open(page)
+  await pickAgent(page, 'Codex')
+  await tab(page, 'MCP').click()
+  await expect(item(page, 'figma')).toHaveAttribute('draggable', 'true')
+
+  await startDrag(page, item(page, 'figma'))
+  await expect(page.locator('#dropstrip .chip')).toHaveText(['Global'])
+  await expect(page.locator('#dropstrip .chip')).toHaveClass(/is-own-place/)
+  await dropOn(page, page.locator('#dropstrip .chip').first())
+
+  await item(page, 'figma').getByRole('button', { name: 'Actions for figma' }).click()
+  await page.getByRole('menuitem', { name: 'Copy to…' }).click()
+  const picker = page.getByRole('dialog', { name: 'Copy figma to' })
+  await expect(picker.getByRole('option')).toHaveText([/Global/])
+  await expect(picker.getByRole('option')).toHaveAttribute('aria-disabled', 'true')
+  await expect(picker.getByRole('radio')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+
+  // Skills do go into projects: every project is a target again.
+  await tab(page, 'Skills').click()
+  await startDrag(page, item(page, 'openai-docs'))
+  await expect(page.locator('#dropstrip .chip')).toHaveText(['Global', 'api-gateway', 'notes', 'storefront'])
+  await dropOn(page, page.locator(`#dropstrip .chip[data-drop="${STORE}"]`))
+  await expect(page.locator('#notice')).toContainText('Moved openai-docs to storefront.')
+  expect(await moves(page)).toEqual([expect.objectContaining({ type: 'move', to: { project: STORE, scope: 'project' } })])
+})
+
+test('a Gemini CLI MCP server with an on/off value shows a switch that toggles it', async ({ page }) => {
+  await open(page)
+  await pickAgent(page, 'Gemini CLI')
+  await tab(page, 'MCP').click()
+  await expect(page.getByRole('switch')).toHaveCount(1)
+  const toggle = item(page, 'context7').getByRole('switch', { name: 'context7 enabled in Global' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await expect(item(page, 'github').locator('.onoff')).toHaveCount(0)
+
+  await toggle.click()
+  await expect(page.locator('#notice')).toContainText('Turned off context7 in Global.')
+  await expect(item(page, 'context7').getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+  await expect(item(page, 'context7')).toHaveClass(/is-off/)
+  const [action] = await moves(page)
+  expect(action).toEqual({ type: 'setEnabled', key: expect.stringMatching(/^mcp:/), enabled: false })
+})
+
 test('every request carries the selected agent', async ({ page }) => {
   await open(page)
   await pickAgent(page, 'Codex')

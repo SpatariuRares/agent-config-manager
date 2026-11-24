@@ -30,7 +30,7 @@
 //
 // Detection: the `copilot` binary on PATH, ~/.copilot, or the copy `gh copilot` downloaded. `gh` alone does not
 // count: every recent gh has the `copilot` command built in, whether or not the Copilot CLI was ever used.
-import type { ActionType, AgentInfo, Kind } from '../../adapters/view.ts'
+import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import type { AgentProvider } from '../types.ts'
 import { COPILOT, copilotPaths, OWNER } from './paths.ts'
 import { readCopilot } from './read.ts'
@@ -41,6 +41,16 @@ export const COPILOT_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
   skills: ['move', 'remove', 'restore'],
   agents: ['move', 'remove', 'restore'],
   mcp: ['move', 'remove', 'restore']
+}
+
+/**
+ * Everything goes to the project's shared folders: skills and agents through moveEntry (no scope), MCP servers
+ * to .github/mcp.json, since Copilot CLI has no only-me MCP file in a project (runCopilotAction refuses 'local').
+ */
+export const COPILOT_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
+  skills: ['project'],
+  agents: ['project'],
+  mcp: ['project']
 }
 
 export const COPILOT_NOTE = [
@@ -64,6 +74,7 @@ export function copilotProvider(): AgentProvider {
         detected,
         kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'],
         supports: Object.fromEntries(Object.entries(COPILOT_SUPPORTS).map(([kind, actions]) => [kind, [...actions]])),
+        projectScopes: Object.fromEntries(Object.entries(COPILOT_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
         configHome: '~/.copilot',
         note: COPILOT_NOTE
       }

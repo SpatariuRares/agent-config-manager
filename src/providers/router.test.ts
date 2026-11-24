@@ -2,16 +2,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fakeFs } from '../core/test-support.ts'
-import type { Action, ActionRequest, AgentInfo, Kind } from '../adapters/view.ts'
+import type { Action, ActionRequest, AgentInfo, Kind, Target } from '../adapters/view.ts'
 import { assertUniqueIds, lookupProvider, routeAction, routeUpdates, routeView } from './router.ts'
-import { fakeExec } from './testing.ts'
+import { fakeExec, projectScopeProblems } from './testing.ts'
 import type { AgentProvider, ProviderDeps } from './types.ts'
 
 const deps: ProviderDeps = { fs: fakeFs({}), exec: fakeExec(), home: '/home', clock: () => new Date('2026-11-24T10:00:00.000Z') }
 const http = { getJson: async () => ({ ok: false as const, status: null, error: 'offline', rateLimited: false }) }
 
 /** A provider whose calls are recorded; it supports `supports` and is detected unless told otherwise. */
-function stub(id: string, options: { detected?: boolean; supports?: AgentInfo['supports']; fail?: 'view' | 'action' } = {}) {
+function stub(
+  id: string,
+  options: { detected?: boolean; supports?: AgentInfo['supports']; projectScopes?: AgentInfo['projectScopes']; fail?: 'view' | 'action' } = {}
+) {
   const calls: ActionRequest[] = []
   const provider: AgentProvider = {
     id,
@@ -22,6 +25,7 @@ function stub(id: string, options: { detected?: boolean; supports?: AgentInfo['s
         detected: options.detected ?? true,
         kinds: ['skills', 'mcp'] as Kind[],
         supports: options.supports ?? { skills: ['remove'] },
+        projectScopes: options.projectScopes ?? {},
         configHome: `~/.${id}`,
         note: `${id} keeps hooks elsewhere.`
       }
@@ -149,6 +153,58 @@ test('a key that names no class is gone, an unknown type is unsupported, and a n
   const none = await routeAction(deps, [a.provider], { agent: 'a', action: null } as unknown as ActionRequest)
   assert.deepEqual(none.result, { ok: false, reason: 'unsupported', message: 'That request is not an action.' })
   assert.deepEqual(a.calls, [])
+})
+
+test('a move into a project is refused when the agent did not declare that scope for the class, before it runs', async () => {
+  const a = stub('a', { supports: { skills: ['move'], mcp: ['move'] }, projectScopes: { skills: ['project'] } })
+  const move = (key: string, to: Target) => request('a', { type: 'move', key, to, copy: false })
+
+  const local = await routeAction(deps, [a.provider], move('skills:/x', { project: '/work/shop', scope: 'local' }))
+  assert.deepEqual(local.result, {
+    ok: false,
+    reason: 'unsupported',
+    message: 'Agent a cannot put skills into a project as "only me" (local); it can use "team" (project). a keeps hooks elsewhere.'
+  })
+  const none = await routeAction(deps, [a.provider], move('mcp:["x"]', { project: '/work/shop', scope: 'project' }))
+  assert.deepEqual(none.result, {
+    ok: false,
+    reason: 'unsupported',
+    message: 'Agent a cannot put mcp into a project here. a keeps hooks elsewhere.'
+  })
+  const odd = await routeAction(deps, [a.provider], move('skills:/x', { project: '/work/shop', scope: 'team' as 'project' }))
+  assert.equal(odd.result.ok === false && odd.result.reason, 'unsupported')
+  assert.equal(a.calls.length, 0, 'a refused move reached the provider')
+
+  // Declared scopes, a project move without a scope (the provider's default, the first declared), and Global run.
+  ok(await routeAction(deps, [a.provider], move('skills:/x', { project: '/work/shop', scope: 'project' })))
+  ok(await routeAction(deps, [a.provider], move('skills:/x', { project: '/work/shop' })))
+  ok(await routeAction(deps, [a.provider], move('mcp:["x"]', { project: null })))
+  assert.deepEqual(a.calls.map((call) => (call.action as { to: unknown }).to), [
+    { project: '/work/shop', scope: 'project' },
+    { project: '/work/shop' },
+    { project: null }
+  ])
+})
+
+test('the contract check: projectScopes lists only classes that move, with known scopes, each once', () => {
+  const info = (supports: AgentInfo['supports'], projectScopes: AgentInfo['projectScopes']): AgentInfo => ({
+    id: 'a',
+    name: 'A',
+    detected: true,
+    kinds: ['skills', 'mcp'],
+    supports,
+    projectScopes,
+    configHome: '~/.a'
+  })
+  assert.deepEqual(projectScopeProblems(info({ skills: ['move'], mcp: ['move'] }, { skills: ['local', 'project'], mcp: [] })), [])
+  assert.deepEqual(projectScopeProblems(info({ skills: ['remove'] }, { skills: ['project'] })), [
+    'projectScopes lists skills, whose supports do not include move'
+  ])
+  assert.deepEqual(projectScopeProblems(info({ skills: ['move'] }, { skills: ['project', 'project', 'user' as 'project'] })), [
+    'projectScopes.skills lists "project" twice',
+    'projectScopes.skills lists "user", which is not local or project'
+  ])
+  assert.deepEqual(projectScopeProblems({ ...info({}, {}), projectScopes: undefined as unknown as AgentInfo['projectScopes'] }), ['projectScopes is missing'])
 })
 
 test('a provider that throws while acting is reported as an error, with the view read again', async () => {

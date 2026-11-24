@@ -19,6 +19,12 @@ export interface AgentInfo {
   kinds: Kind[]
   /** Per class, the actions this agent can do; anything missing is read-only in the panel. */
   supports: Partial<Record<Kind, ActionType[]>>
+  /**
+   * Per class, the scopes a move or copy into a project may target, in preference order: the first is the
+   * default (a drag drop uses it). A missing class or an empty list means items of that class cannot go into
+   * a project. Only classes whose `supports` include 'move' may be listed.
+   */
+  projectScopes: Partial<Record<Kind, ProjectScope[]>>
   /** Where the agent keeps its setup, shown to the user (e.g. "~/.codex/config.toml"). */
   configHome: string
   /** Why something is read-only or missing, shown once per agent. */
@@ -27,6 +33,9 @@ export interface AgentInfo {
 
 /** Which file or folder an item lives in. user = global; project = shared with the team; local = only me. */
 export type Scope = 'user' | 'project' | 'local'
+
+/** The scopes inside a project: 'project' = team (shared files), 'local' = only me. */
+export type ProjectScope = 'project' | 'local'
 
 export interface Item {
   /** Unique and stable across reads, e.g. `skills:/abs/path/SKILL.md`. Actions name items by key. */
@@ -45,6 +54,11 @@ export interface Item {
   movable: boolean
   notMovableReason?: string
   removable: boolean
+  /**
+   * The item's on/off switch, for a class whose agent supports 'setEnabled' there (e.g. Gemini CLI MCP servers).
+   * Plugin items keep theirs in `plugin.enabled`; the panel reads `plugin?.enabled ?? enabled`.
+   */
+  enabled?: boolean
   plugin?: {
     id: string
     /** The value in this item's own settings file (global switch, or the project override). */
@@ -117,8 +131,11 @@ export type ViewAnswer = { ok: true; view: View } | { ok: false; error: string }
 
 export interface Target {
   project: string | null
-  /** For a project target: 'local' (only me, default) or 'project' (team). Ignored for global. */
-  scope?: 'project' | 'local'
+  /**
+   * For a project target: one of the agent's `projectScopes` for the item's class; without it, the provider's
+   * default (the first declared). Ignored for global.
+   */
+  scope?: ProjectScope
 }
 
 /** An action the panel can send; `undo` in a result is one of these, ready to send back. */

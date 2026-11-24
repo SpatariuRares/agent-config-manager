@@ -38,16 +38,30 @@
 //   them; the Antigravity CLI binary ~/.gemini/bin/agy (1.5.16) does (`grep -a` finds config/hooks.json,
 //   config/skills, mcp_config.json, import_manifest.json, PreInvocation). This provider never reads them.
 // - Never read: ~/.gemini/.env, oauth_creds.json, google_accounts.json, history/, logs/, extension .env files.
-import type { ActionType, AgentInfo, Kind } from '../../adapters/view.ts'
+import type { ActionType, AgentInfo, Item, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
 import { geminiAction } from './actions.ts'
 import { geminiPaths } from './paths.ts'
-import { GEMINI, readSetup } from './read.ts'
+import { GEMINI, readSetup, type Setup } from './read.ts'
 
 /** What works, per class. Backups (restore, snapshot) cover the files the CLI changes for these actions. */
 export const GEMINI_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
   plugins: ['setEnabled', 'uninstall', 'update', 'restore', 'snapshot'],
   mcp: ['move', 'remove', 'setEnabled', 'restore', 'snapshot']
+}
+
+/** MCP servers go to the project's .gemini/settings.json, which is shared: Gemini CLI has no only-me project file (moveMcp). */
+export const GEMINI_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
+  mcp: ['project']
+}
+
+/** An MCP item carries its switch: off when `gemini mcp disable` turned it off (mcp-server-enablement.json). */
+function withSwitches({ view, refs }: Setup) {
+  const items = view.items.map((item): Item => {
+    const ref = refs.get(item.key)
+    return ref?.kind === 'mcp' ? { ...item, enabled: ref.enabled } : item
+  })
+  return { ...view, items }
 }
 
 const NOTE =
@@ -67,11 +81,12 @@ export function geminiProvider(): AgentProvider {
         detected,
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(GEMINI_SUPPORTS).map(([kind, actions]) => [kind, [...(actions ?? [])]])),
+        projectScopes: Object.fromEntries(Object.entries(GEMINI_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
         configHome: '~/.gemini',
         note: NOTE
       }
     },
-    buildView: async (deps) => (await readSetup(deps.fs, geminiPaths(deps.home))).view,
+    buildView: async (deps) => withSwitches(await readSetup(deps.fs, geminiPaths(deps.home))),
     runAction: (deps, request) => geminiAction(deps, geminiPaths(deps.home), request)
   }
 }

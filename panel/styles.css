@@ -1220,7 +1220,8 @@ code {
 :root.is-dragging .item:hover {
   background: none;
 }
-:root.is-dragging .acc.is-own-place {
+:root.is-dragging .acc.is-own-place,
+:root.is-dragging .acc.is-no-drop {
   opacity: 0.55;
 }
 

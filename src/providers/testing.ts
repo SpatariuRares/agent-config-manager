@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fakeFs } from '../core/test-support.ts'
 import type { CliResult, CommandRunner } from '../core/ports.ts'
-import type { Action, ActionResult, ActionType, Kind, View } from '../adapters/view.ts'
+import type { Action, ActionResult, ActionType, AgentInfo, Kind, View } from '../adapters/view.ts'
 import { routeAction, routeView } from './router.ts'
 import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
 
@@ -52,6 +52,26 @@ export interface ContractFixture {
     /** The file that action changes. */
     file: string
   }
+}
+
+/**
+ * What is wrong with `info.projectScopes`: it must exist, list only classes whose `supports` include 'move',
+ * and name each of 'local' and 'project' at most once. Empty when it is right.
+ */
+export function projectScopeProblems(info: AgentInfo): string[] {
+  if (info.projectScopes === null || typeof info.projectScopes !== 'object') return ['projectScopes is missing']
+  const problems: string[] = []
+  for (const [kind, scopes] of Object.entries(info.projectScopes)) {
+    const list: string[] = scopes ?? []
+    if (list.length > 0 && !(info.supports[kind as Kind] ?? []).includes('move')) {
+      problems.push(`projectScopes lists ${kind}, whose supports do not include move`)
+    }
+    list.forEach((scope, i) => {
+      if (list.indexOf(scope) !== i) problems.push(`projectScopes.${kind} lists ${JSON.stringify(scope)} twice`)
+      else if (scope !== 'local' && scope !== 'project') problems.push(`projectScopes.${kind} lists ${JSON.stringify(scope)}, which is not local or project`)
+    })
+  }
+  return problems
 }
 
 const CLOCK = () => new Date('2026-11-24T10:00:00.000Z')
@@ -116,6 +136,7 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
       assert.ok(info.kinds.includes(kind as Kind), `supports lists ${kind}, which is not in kinds`)
       for (const action of actions ?? []) assert.ok(ACTION_TYPES.includes(action), `unknown action ${action}`)
     }
+    assert.deepEqual(projectScopeProblems(info), [], 'projectScopes')
     assert.equal(typeof info.configHome, 'string')
     assert.ok(info.configHome !== '')
   })

@@ -97,7 +97,30 @@ export function refusal(info: AgentInfo, action: Action): (ActionResult & { ok: 
     if (action.type === 'updateAll') return { ok: false, reason: 'unsupported', message: 'There is nothing to update.' }
     return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
   }
-  return info.kinds.includes(kind) && declared(kind) ? null : unsupported(`for ${kind}`)
+  if (!info.kinds.includes(kind) || !declared(kind)) return unsupported(`for ${kind}`)
+  return action.type === 'move' ? scopeRefusal(info, kind, action.to) : null
+}
+
+const SCOPE_WORDS: Record<string, string> = { local: '"only me" (local)', project: '"team" (project)' }
+const scopeWords = (scope: string) => SCOPE_WORDS[scope] ?? JSON.stringify(scope.slice(0, 32))
+
+/**
+ * A move into a project must target a scope the agent declared for the class in `projectScopes`. Without a
+ * scope the provider uses its default, the first declared. Global targets, and targets that name no project
+ * (the provider refuses those itself), pass through.
+ */
+function scopeRefusal(info: AgentInfo, kind: Kind, to: unknown): (ActionResult & { ok: false }) | null {
+  if (!isObject(to) || typeof to.project !== 'string') return null
+  const note = info.note ? ` ${info.note}` : ''
+  const scopes: string[] = info.projectScopes?.[kind] ?? []
+  if (scopes.length === 0) return { ok: false, reason: 'unsupported', message: `${info.name} cannot put ${kind} into a project here.${note}` }
+  const scope: unknown = to.scope
+  if (scope === undefined || (typeof scope === 'string' && scopes.includes(scope))) return null
+  return {
+    ok: false,
+    reason: 'unsupported',
+    message: `${info.name} cannot put ${kind} into a project as ${scopeWords(String(scope))}; it can use ${scopes.map(scopeWords).join(' or ')}.${note}`
+  }
 }
 
 /** 'updates.check': the agent's own check, or nothing to check when it has none. Never throws. */
