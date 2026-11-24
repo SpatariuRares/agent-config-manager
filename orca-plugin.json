@@ -16,8 +16,7 @@
         "id": "claude-config",
         "title": "Claude Config",
         "icon": "blocks",
-        "entry": "src/adapters/orca/panel.tsx",
-        "ui": "components"
+        "entry": "panel/index.html"
       }
     ]
   },

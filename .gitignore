@@ -1,3 +1,6 @@
 node_modules/
 .orca/
 .DS_Store
+tests/panel/shots/
+test-results/
+playwright-report/
