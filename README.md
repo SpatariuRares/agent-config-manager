@@ -1,5 +1,7 @@
 # Claude Config Manager
 
+One panel for the setup of your coding agents: Claude Code, Codex, Gemini CLI and Copilot CLI. Adding another agent is one provider folder: see [docs/adding-an-agent.md](docs/adding-an-agent.md).
+
 See your whole Claude Code setup in one place: plugins, skills, agents, MCP servers and hooks.
 Turn plugins on and off, move or copy items between global and projects, remove them, take and restore backups, and check for updates.
 
