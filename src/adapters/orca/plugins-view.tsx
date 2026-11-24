@@ -60,7 +60,7 @@ function Overrides({ plugin }: { plugin: Plugin }) {
   if (plugin.overrides.length === 0) return null
   const on = plugin.overrides.filter((o) => o.enabled).length
   return (
-    <Collapsible title={`Projects: ${on} on, ${plugin.overrides.length - on} off`}>
+    <Collapsible title="Projects" description={`${on} on, ${plugin.overrides.length - on} off`}>
       <Stack gap="xs">
         {plugin.overrides.map((o) => (
           <Row key={`${o.project}-${o.scope}`} justify="between" align="center">
@@ -85,9 +85,11 @@ function Uninstall({ plugin }: { plugin: Plugin }) {
   if (plugin.installs.length === 0) return null
   if (read(confirmingUninstall) !== plugin.id) {
     return (
-      <Button size="xs" variant="ghost" tone="danger" disabled={read(busy) !== null} onPress={() => set(confirmingUninstall, plugin.id)}>
-        Uninstall
-      </Button>
+      <Row justify="end">
+        <Button size="xs" variant="ghost" icon="delete" disabled={read(busy) !== null} onPress={() => set(confirmingUninstall, plugin.id)}>
+          Uninstall
+        </Button>
+      </Row>
     )
   }
   const where = plugin.installs.map((i) => (i.project ? projectLabel(i.project) : 'user')).join(', ')
