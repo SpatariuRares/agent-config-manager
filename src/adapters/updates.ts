@@ -7,7 +7,7 @@ export function fetchHttp(timeoutMs = 10_000): Http {
     async getJson(url): Promise<HttpResult> {
       try {
         const response = await fetch(url, {
-          headers: { accept: 'application/json', 'user-agent': 'claude-config-manager' },
+          headers: { accept: 'application/json', 'user-agent': 'agent-config-manager' },
           signal: AbortSignal.timeout(timeoutMs)
         })
         if (!response.ok) {

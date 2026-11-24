@@ -1,4 +1,4 @@
-/* Claude Config panel. Styled only from Orca's --orca-* variables; the --fb-* sets are fallbacks
+/* Agent Config panel. Styled only from Orca's --orca-* variables; the --fb-* sets are fallbacks
    so the page also renders outside Orca (fixture page, tests, later localhost). */
 
 :root,

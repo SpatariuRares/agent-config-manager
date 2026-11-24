@@ -14,7 +14,7 @@ export const ENABLEMENT = `${GEMINI}/extensions/extension-enablement.json`
 export const MCP_ENABLEMENT = `${GEMINI}/mcp-server-enablement.json`
 export const SHOP = '/work/shop'
 export const SHOP_SETTINGS = `${SHOP}/.gemini/settings.json`
-export const BACKUPS = `${HOME}/.config/claude-config-manager/backups/gemini`
+export const BACKUPS = `${HOME}/.config/agent-config-manager/backups/gemini`
 export const OLD_BACKUP = 'settings.2026-11-20T10-00-00-000Z.json'
 
 /** Secret values the fixture holds; none may ever show in an item. */

@@ -11,7 +11,7 @@ const HOME = '/home'
 const CONFIG = '/home/.codex/config.toml'
 const HOOKS = '/home/.codex/hooks.json'
 const SHOP = '/work/shop'
-const BACKUPS = '/home/.config/claude-config-manager/backups/codex'
+const BACKUPS = '/home/.config/agent-config-manager/backups/codex'
 const CLOCK = () => new Date('2026-11-24T10:00:00.000Z')
 
 // Shaped like a real ~/.codex/config.toml (codex-cli 0.171.0), with comments added by hand.

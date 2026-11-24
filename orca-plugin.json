@@ -1,7 +1,7 @@
 {
   "manifestVersion": 2,
-  "id": "claude-config-manager",
-  "name": "Claude Config Manager",
+  "id": "agent-config-manager",
+  "name": "Agent Config Manager",
   "version": "0.1.0",
   "description": "See your Claude Code setup in one place: plugins, skills, agents, MCP servers and hooks.",
   "engines": {
@@ -14,7 +14,7 @@
     "panels": [
       {
         "id": "claude-config",
-        "title": "Claude Config",
+        "title": "Agent Config",
         "icon": "blocks",
         "entry": "panel/index.html"
       }

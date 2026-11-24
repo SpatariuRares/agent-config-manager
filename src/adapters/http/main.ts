@@ -33,7 +33,7 @@ server.listen(port, '127.0.0.1', () => {
   const { port: bound } = server.address() as { port: number }
   // The token rides in the fragment: browsers never send it to servers, logs or Referer headers.
   const url = `http://127.0.0.1:${bound}/#token=${token}`
-  console.log(`Claude Config Manager is running at\n  ${url}\nKeep this terminal open; Ctrl-C stops it.`)
+  console.log(`Agent Config Manager is running at\n  ${url}\nKeep this terminal open; Ctrl-C stops it.`)
   if (!args.includes('--no-open')) {
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open'
     execFile(opener, [url], () => {})

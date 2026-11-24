@@ -10,7 +10,7 @@ const HOME = '/home/me'
 const DIR = `${HOME}/.copilot`
 const MCP = `${DIR}/mcp-config.json`
 const SHOP = '/work/shop'
-const STORE = `${HOME}/.config/claude-config-manager/backups/copilot`
+const STORE = `${HOME}/.config/agent-config-manager/backups/copilot`
 const json = (value: unknown) => JSON.stringify(value, null, 2) + '\n'
 
 const FILES: Record<string, string> = {

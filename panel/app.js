@@ -1,4 +1,4 @@
-// Claude Config panel: state, rendering and interaction. Talks to the backend only through transport.js.
+// Agent Config panel: state, rendering and interaction. Talks to the backend only through transport.js.
 
 import { h, replaceChildren } from './dom.js'
 import { icon } from './icons.js'
@@ -1224,7 +1224,7 @@ document.addEventListener('keydown', (e) => {
 // Drag MOVES; holding ⌥ Option (altKey) COPIES. Drop targets: every accordion, and while dragging a
 // strip that lists Global and every known project, including those with no items.
 
-const DRAG_TYPE = 'application/x-claude-config-item'
+const DRAG_TYPE = 'application/x-agent-config-item'
 
 function zoneProject(zone) {
   const value = zone.dataset.drop

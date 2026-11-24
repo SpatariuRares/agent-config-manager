@@ -12,7 +12,7 @@ test('a store keeps backups under the neutral app folder, named by the encoded p
   const fs = fakeFs({ '/home/.codex/config.json': '{"a":1}' })
   const first = await backUp(fs, store, '/home/.codex/config.json', '{"a":1}', clock)
   const second = await backUp(fs, store, '/home/.codex/config.json', '{"a":2}', () => new Date('2026-11-24T11:00:00.000Z'))
-  assert.equal(first, '/home/.config/claude-config-manager/backups/codex/%2Fhome%2F.codex%2Fconfig.json.2026-11-24T10-00-00-000Z.json')
+  assert.equal(first, '/home/.config/agent-config-manager/backups/codex/%2Fhome%2F.codex%2Fconfig.json.2026-11-24T10-00-00-000Z.json')
   assert.deepEqual(await listBackups(fs, store), [second.slice(store.dir.length + 1), first.slice(store.dir.length + 1)])
   assert.equal(backupTarget(store, first.slice(store.dir.length + 1)), '/home/.codex/config.json')
   assert.equal((await listAllBackups(fs, store))[0].target, '/home/.codex/config.json')

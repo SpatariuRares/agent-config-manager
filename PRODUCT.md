@@ -1,4 +1,4 @@
-# Claude Config Manager
+# Agent Config Manager
 
 ## Product
 

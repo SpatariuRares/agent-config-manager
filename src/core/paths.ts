@@ -30,4 +30,4 @@ export function tilde(home: string, path: string): string {
  * Where this app keeps the backups and trash of an agent: a neutral app folder, never inside the agent's own
  * config home. Claude Code keeps its historical ~/.claude/backups/claude-config-manager instead (see the Claude provider).
  */
-export const appBackupDir = (home: string, agent: string) => `${home}/.config/claude-config-manager/backups/${agent}`
+export const appBackupDir = (home: string, agent: string) => `${home}/.config/agent-config-manager/backups/${agent}`
