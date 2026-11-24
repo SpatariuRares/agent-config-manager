@@ -42,7 +42,9 @@ test('reads what each installed plugin contributes', async () => {
       commands: ['ship'],
       hooks: ['PreToolUse', 'Stop'],
       mcpServers: ['docs']
-    }
+    },
+    overrides: [],
+    installs: [{ scope: 'user', project: null }]
   })
 })
 
@@ -67,7 +69,9 @@ test('a plugin enabled in settings but not installed has no version and no contr
     enabled: true,
     version: null,
     sharesNameWith: [],
-    contributes: { skills: [], agents: [], commands: [], hooks: [], mcpServers: [] }
+    contributes: { skills: [], agents: [], commands: [], hooks: [], mcpServers: [] },
+    overrides: [],
+    installs: []
   })
 })
 

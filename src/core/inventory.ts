@@ -10,16 +10,35 @@ export interface PluginContributions {
   mcpServers: string[]
 }
 
+export type ProjectScope = 'project' | 'local'
+
+/** A plugin's on/off value set in one project's settings file. */
+export interface Override {
+  project: string
+  /** project: .claude/settings.json (shared); local: .claude/settings.local.json (only me). */
+  scope: ProjectScope
+  enabled: boolean
+}
+
+/** One install record; a plugin can be installed for the user and for single projects. */
+export interface Install {
+  scope: string
+  project: string | null
+}
+
 export interface Plugin {
   id: string
   name: string
   marketplace: string
+  /** The global (user settings) value. */
   enabled: boolean
   /** Installed version, or null when the plugin is listed in settings but not installed. */
   version: string | null
   /** Ids of plugins with the same name from other marketplaces. */
   sharesNameWith: string[]
   contributes: PluginContributions
+  overrides: Override[]
+  installs: Install[]
 }
 
 export interface Skill {
@@ -52,6 +71,10 @@ export interface Inventory {
   problems: string[]
   /** Identifies the settings.json content this inventory was read from; '' when the file is missing. */
   settingsVersion: string
+  /** Projects Claude Code has been used in that still exist, sorted. */
+  projects: string[]
+  /** versionOf() of every settings file read, by absolute path. */
+  versions: Record<string, string>
 }
 
 type Json = Record<string, any>
@@ -62,19 +85,53 @@ export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise
   const settings = await readJson(fs, settingsFile(paths), problems)
   const userConfig = await readJson(fs, paths.userConfigFile, problems)
   const installed = await readJson(fs, `${paths.claudeDir}/plugins/installed_plugins.json`, problems)
+  const versions: Record<string, string> = { [settingsFile(paths)]: versionOf(settingsText) }
+  const projects = await readProjects(fs, userConfig)
+  const overrides: (Override & { id: string })[] = []
+  for (const project of projects) {
+    for (const scope of ['project', 'local'] as const) {
+      const file = projectSettingsFile(project, scope)
+      versions[file] = versionOf(await fs.readText(file))
+      for (const [id, enabled] of Object.entries((await readJson(fs, file, problems)).enabledPlugins ?? {})) {
+        overrides.push({ id, project, scope, enabled: enabled === true })
+      }
+    }
+  }
 
   return {
-    plugins: await readPlugins(fs, settings, installed, problems),
+    plugins: await readPlugins(fs, settings, installed, overrides, problems),
     skills: await readSkills(fs, `${paths.claudeDir}/skills`),
     agents: await readAgents(fs, `${paths.claudeDir}/agents`),
     mcpServers: readMcpServers(userConfig),
     hooks: readHooks(settings),
     problems,
-    settingsVersion: versionOf(settingsText)
+    settingsVersion: versionOf(settingsText),
+    projects,
+    versions
   }
 }
 
 export const settingsFile = (paths: ClaudePaths) => `${paths.claudeDir}/settings.json`
+
+export const projectSettingsFile = (project: string, scope: ProjectScope) =>
+  `${project}/.claude/${scope === 'local' ? 'settings.local.json' : 'settings.json'}`
+
+/** Whether a plugin runs in a project: local beats project beats the global value. */
+export function effectiveState(plugin: Plugin, project: string): { enabled: boolean; from: 'user' | ProjectScope } {
+  for (const scope of ['local', 'project'] as const) {
+    const override = plugin.overrides.find((o) => o.project === project && o.scope === scope)
+    if (override) return { enabled: override.enabled, from: scope }
+  }
+  return { enabled: plugin.enabled, from: 'user' }
+}
+
+async function readProjects(fs: FileSystem, userConfig: Json): Promise<string[]> {
+  const projects: string[] = []
+  for (const path of Object.keys(isObject(userConfig.projects) ? userConfig.projects : {})) {
+    if (path.startsWith('/') && (await fs.listEntries(path)).length > 0) projects.push(path)
+  }
+  return projects.sort()
+}
 
 /** FNV-1a of the file text: cheap, stable, and enough to notice that the file changed. */
 export function versionOf(text: string | null): string {
@@ -101,23 +158,32 @@ async function readJson(fs: FileSystem, path: string, problems: string[]): Promi
   }
 }
 
-async function readPlugins(fs: FileSystem, settings: Json, installed: Json, problems: string[]): Promise<Plugin[]> {
-  const ids = Object.keys(settings.enabledPlugins ?? {})
+async function readPlugins(
+  fs: FileSystem,
+  settings: Json,
+  installed: Json,
+  overrides: (Override & { id: string })[],
+  problems: string[]
+): Promise<Plugin[]> {
+  const ids = [...new Set([...Object.keys(settings.enabledPlugins ?? {}), ...overrides.map((o) => o.id)])]
   const nameOf = (id: string) => (id.lastIndexOf('@') === -1 ? id : id.slice(0, id.lastIndexOf('@')))
   const plugins: Plugin[] = []
   for (const id of ids) {
     const at = id.lastIndexOf('@')
-    const install: Json | undefined = installed.plugins?.[id]?.[0]
+    const records: Json[] = (Array.isArray(installed.plugins?.[id]) ? installed.plugins[id] : []).filter(isObject)
+    const install = records.find((record) => record.scope === 'user') ?? records[0]
     plugins.push({
       id,
       name: nameOf(id),
       marketplace: at === -1 ? '' : id.slice(at + 1),
-      enabled: settings.enabledPlugins[id] === true,
+      enabled: settings.enabledPlugins?.[id] === true,
       version: install?.version ?? null,
       sharesNameWith: ids.filter((other) => other !== id && nameOf(other) === nameOf(id)).sort(),
       contributes: install?.installPath
         ? await readContributions(fs, install.installPath, problems)
-        : { skills: [], agents: [], commands: [], hooks: [], mcpServers: [] }
+        : { skills: [], agents: [], commands: [], hooks: [], mcpServers: [] },
+      overrides: overrides.filter((o) => o.id === id).map(({ project, scope, enabled }) => ({ project, scope, enabled })),
+      installs: records.map((record) => ({ scope: String(record.scope ?? 'user'), project: record.projectPath ?? null }))
     })
   }
   return plugins.sort((a, b) => a.id.localeCompare(b.id))
