@@ -19,7 +19,7 @@ Branch: feat/updates (stacked on feat/html-panel) · Delivery: ask-on-risk · Te
 
 | ID | Specs | Route | Status | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S1, S2, S3, S4 | delegated writer A (parallel with B): update sources in the view, `checkUpdates`, update actions, worker `updates.check` · Risk: item 5 (runs installers/CLIs), item 1 | todo | |
+| T1 | S1, S2, S3, S4 | delegated writer A (parallel with B): update sources in the view, `checkUpdates`, update actions, worker `updates.check` · Risk: item 5 (runs installers/CLIs), item 1 | done (133 tests, tsc 0); verifier running | f372436 |
 | T2 | S1, S2, S3, S4 | delegated writer B (parallel with A): panel UI for sources, check, update, update all, confirm; fixture support; Playwright | todo | |
 | T3 | all | inline: seam check, real read-only check in Orca, verifier on T1 | todo | |
 
@@ -30,3 +30,4 @@ Route evidence: two disjoint units joined by `src/adapters/view.ts` (extended in
 - L1 (2026-11-24) User: "aggiungi anche l'uptate a plugin, mcp , skills e tutt o"
 - L2 Evidence: `claude plugin update <plugin> [--scope] [--json] [-y] [--accept-command <sha256>]`; `claude plugin marketplace update [name]`; marketplace manifests mostly lack versions (14/317), so availability for plugins is unknown until an update runs, unless a version or commit can be compared. ~/.agents/.skill-lock.json: 64 skills, all github, with sourceUrl, skillPath, skillFolderHash. `skills` CLI has `update [skills...] -g -y` and no check command. Real MCP: context7 = `npx -y --package=@upstash/context7-mcp@2.2.5 -- context7-mcp`; engram = /opt/homebrew/bin/engram; others local binaries or http.
 - L3 Decisions (parent, no question asked): check only on demand; never auto-accept a plugin's marketplace command.
+- L4 T1 (writer A): real data has update sources for 24 plugins, 25 skills (7 GitHub repos → 7 calls per check), MCP: context7 and chrome-devtools-mcp (npm), engram (Homebrew). Most claude-plugins-official plugins stay "unknown" until updated: that marketplace copy is not a git checkout and declares versions for only 14/317. Ports: PluginCli.pluginUpdate/marketplaceUpdate/skillsUpdate/git, Http.getJson (fetch, 10 s timeout). The shownCommand JSON shape of `claude plugin update` is parsed leniently and is unconfirmed against real output.
