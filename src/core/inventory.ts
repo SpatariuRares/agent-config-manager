@@ -127,6 +127,11 @@ export function effectiveState(plugin: Plugin, project: string): { enabled: bool
   return { enabled: plugin.enabled, from: 'user' }
 }
 
+/** Projects Claude Code has been used in that still exist. */
+export async function knownProjects(fs: FileSystem, paths: ClaudePaths): Promise<string[]> {
+  return readProjects(fs, await readJson(fs, paths.userConfigFile, []))
+}
+
 async function readProjects(fs: FileSystem, userConfig: Json): Promise<string[]> {
   const projects: string[] = []
   for (const path of Object.keys(isObject(userConfig.projects) ? userConfig.projects : {})) {
