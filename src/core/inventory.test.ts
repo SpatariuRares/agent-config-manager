@@ -1,24 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readInventory } from './inventory.ts'
-import type { FileSystem } from './ports.ts'
-
-const paths = { claudeDir: '/home/.claude', userConfigFile: '/home/.claude.json' }
-
-function fakeFs(files: Record<string, string>): FileSystem {
-  return {
-    async readText(path) {
-      return files[path] ?? null
-    },
-    async listEntries(dir) {
-      const prefix = `${dir}/`
-      const names = Object.keys(files)
-        .filter((path) => path.startsWith(prefix))
-        .map((path) => path.slice(prefix.length).split('/')[0])
-      return [...new Set(names)].sort()
-    }
-  }
-}
+import { fakeFs, paths } from './test-support.ts'
 
 const settings = {
   enabledPlugins: { 'github@official': true, 'slack@productivity': false },
@@ -50,10 +33,13 @@ const fs = fakeFs({
 
 test('lists plugins with their marketplace and enabled state', async () => {
   const { plugins } = await readInventory(fs, paths)
-  assert.deepEqual(plugins, [
-    { id: 'github@official', name: 'github', marketplace: 'official', enabled: true },
-    { id: 'slack@productivity', name: 'slack', marketplace: 'productivity', enabled: false }
-  ])
+  assert.deepEqual(
+    plugins.map(({ id, name, marketplace, enabled }) => ({ id, name, marketplace, enabled })),
+    [
+      { id: 'github@official', name: 'github', marketplace: 'official', enabled: true },
+      { id: 'slack@productivity', name: 'slack', marketplace: 'productivity', enabled: false }
+    ]
+  )
 })
 
 test('lists only skill folders that hold a SKILL.md, with their description', async () => {
