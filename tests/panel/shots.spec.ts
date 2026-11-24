@@ -82,3 +82,23 @@ for (const scheme of ['dark', 'light'] as const) {
     await page.screenshot({ animations: 'disabled', path: `${dir}/updates-all-notice-${scheme}-360.png` })
   })
 }
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`screenshot agent switcher ${scheme} 360px`, async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 640 })
+    await page.goto(`index.html?fixture&latency=0&theme=${scheme}`)
+    await expect(page.getByRole('tab', { name: /Plugins/ })).toContainText('22')
+    await page.getByRole('button', { name: /^Agent:/ }).click()
+    await expect(page.getByRole('menu', { name: 'Agents' })).toBeVisible()
+    await page.screenshot({ animations: 'disabled', path: `${dir}/agents-menu-${scheme}-360.png` })
+
+    await page.getByRole('menuitemradio', { name: /^Codex/ }).click()
+    await expect(page.getByRole('tab', { name: /Plugins/ })).toContainText('2')
+    await page.screenshot({ animations: 'disabled', path: `${dir}/agents-codex-${scheme}-360.png` })
+
+    await page.getByRole('button', { name: /^Agent:/ }).click()
+    await page.getByRole('menuitemradio', { name: /^Copilot CLI/ }).click()
+    await expect(page.locator('.acc-empty').first()).toContainText('not installed')
+    await page.screenshot({ animations: 'disabled', path: `${dir}/agents-copilot-${scheme}-360.png` })
+  })
+}

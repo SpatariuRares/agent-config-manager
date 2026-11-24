@@ -75,20 +75,24 @@ function open(anchor, el, onKey) {
 
 /**
  * Overflow menu. entries: { label, icon, onSelect, danger?, disabled?, hint? } or 'separator'.
+ * A choice menu (the agent switcher) gives every entry `checked`, and may add `detail` (a second,
+ * quieter line), `tag` (a short marker) and `dim` (shown quieter, still selectable).
  */
-export function openMenu(anchor, { label, entries }) {
+export function openMenu(anchor, { label, entries, className = '' }) {
   const buttons = []
   const menu = h(
     'div',
-    { class: 'popover menu', role: 'menu', 'aria-label': label },
+    { class: `popover menu ${className}`.trim(), role: 'menu', 'aria-label': label },
     entries.map((entry) => {
       if (entry === 'separator') return h('div', { class: 'menu-sep', role: 'separator' })
+      const choice = entry.checked !== undefined
       const button = h(
         'button',
         {
           type: 'button',
-          class: `menu-item${entry.danger ? ' is-danger' : ''}`,
-          role: 'menuitem',
+          class: `menu-item${entry.danger ? ' is-danger' : ''}${entry.dim ? ' is-dim' : ''}${entry.detail ? ' has-detail' : ''}`,
+          role: choice ? 'menuitemradio' : 'menuitem',
+          'aria-checked': choice ? String(!!entry.checked) : null,
           tabindex: '-1',
           'aria-disabled': entry.disabled ? 'true' : null,
           title: entry.hint ?? null,
@@ -99,7 +103,10 @@ export function openMenu(anchor, { label, entries }) {
           },
         },
         icon(entry.icon, 14),
-        h('span', { class: 'menu-label' }, entry.label),
+        entry.detail
+          ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, entry.label), h('span', { class: 'menu-detail' }, entry.detail))
+          : h('span', { class: 'menu-label' }, entry.label),
+        entry.tag ? h('span', { class: 'menu-tag' }, entry.tag) : null,
       )
       buttons.push(button)
       return button
@@ -116,7 +123,7 @@ export function openMenu(anchor, { label, entries }) {
     else return
     e.preventDefault()
   })
-  focusAt(0)
+  focusAt(Math.max(0, buttons.findIndex((b) => b.getAttribute('aria-checked') === 'true')))
 }
 
 /**

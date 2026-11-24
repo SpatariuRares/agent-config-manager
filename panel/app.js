@@ -67,11 +67,20 @@ const store = {
 
 // ---------- State ----------
 
+const freshUpdates = () => ({ checking: false, checkedAt: null, statuses: {}, errors: [] })
+const storedTab = KINDS.includes(store.get('tab', 'plugins')) ? store.get('tab', 'plugins') : 'plugins'
+
 const state = {
   view: null,
   loading: true,
   loadError: null,
-  tab: KINDS.includes(store.get('tab', 'plugins')) ? store.get('tab', 'plugins') : 'plugins',
+  /** Every agent the backend knows (View.agents), kept while another agent's view loads. */
+  agents: null,
+  /** The agent shown: the one picked, else the one the backend chose. Null before the first view. */
+  agent: transport.agent,
+  tab: storedTab,
+  /** The tab the user picked last; shown again whenever the agent has that class. */
+  preferredTab: storedTab,
   filter: '',
   /** { [tab]: { [groupId]: false } } — accordions default open; only closed ones are stored. */
   closed: store.get('closed', {}),
@@ -83,13 +92,15 @@ const state = {
   backupsOpen: store.get('backupsOpen', false),
   drag: null,
   /** The last on-demand update check; statuses are keyed by Item.key. Never polled. */
-  updates: { checking: false, checkedAt: null, statuses: {}, errors: [] },
+  updates: freshUpdates(),
   /** A plugin update waiting for the user to approve its command: { key, message, command, action }. */
   updateConfirm: null,
 }
 
 const $ = (id) => document.getElementById(id)
 const els = {
+  agent: $('agent'),
+  foot: $('foot'),
   tabs: $('tabs'),
   panel: $('tabpanel'),
   filter: $('filter'),
@@ -114,20 +125,74 @@ function setGroupOpen(tab, id, open) {
 
 const itemByKey = (key) => state.view?.items.find((i) => i.key === key)
 
+// ---------- Agent capabilities (AgentInfo) ----------
+
+/** The AgentInfo of the agent shown, or null before the backend has listed its agents. */
+const currentAgent = () => state.agents?.find((a) => a.id === state.agent) ?? null
+const agentName = () => currentAgent()?.name ?? 'Claude Code'
+/** The tabs this agent has; every class until the agents are known. */
+const agentKinds = () => {
+  const kinds = currentAgent()?.kinds?.filter((k) => KINDS.includes(k))
+  return kinds?.length ? kinds : KINDS
+}
+/** True when the agent supports this action on this class. Anything else is read-only: never offered. */
+const supports = (kind, type) => !!currentAgent()?.supports?.[kind]?.includes(type)
+/** For actions over every file (Create backup, Restore): supported for any class. */
+const supportsAny = (type) => Object.values(currentAgent()?.supports ?? {}).some((list) => list?.includes(type))
+/** Before the agents are known nothing is hidden, so the header does not jump on the first load. */
+const offers = (type) => !currentAgent() || supportsAny(type)
+
+/** Shows the preferred tab when this agent has it, else the agent's first class. */
+function settleTab() {
+  const kinds = agentKinds()
+  state.tab = kinds.includes(state.preferredTab) ? state.preferredTab : kinds[0]
+}
+
 // ---------- Backend calls ----------
 
+/** Each load gets a number; an answer for an older load (the agent changed meanwhile) is dropped. */
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   state.loading = true
   render()
   const answer = await transport.getView()
+  if (seq !== loadSeq) return
   state.loading = false
   if (answer.ok) {
     state.view = answer.view
     state.loadError = null
+    if (answer.view.agents?.length) state.agents = answer.view.agents
+    state.agent = answer.view.agent ?? transport.agent
   } else {
     state.loadError = answer.error
+    if (answer.agents?.length) state.agents = answer.agents
+    state.agent = transport.agent
   }
+  settleTab()
   render()
+}
+
+/**
+ * Shows another agent: its view is read again, and the filter, the update check and anything
+ * pending for the previous agent are cleared. The tab stays when the new agent has that class.
+ */
+function selectAgent(id) {
+  if (!id || id === state.agent || state.busy) return
+  transport.setAgent(id)
+  state.agent = id
+  state.view = null
+  state.loadError = null
+  state.filter = ''
+  els.filter.value = ''
+  state.updates = freshUpdates()
+  state.confirm = null
+  state.updateConfirm = null
+  state.notice = null
+  state.expanded.clear()
+  settleTab()
+  return load()
 }
 
 /**
@@ -187,7 +252,9 @@ async function checkUpdates() {
   if (state.updates.checking) return
   state.updates = { ...state.updates, checking: true }
   render()
+  const agent = state.agent
   const answer = await transport.checkUpdates()
+  if (agent !== state.agent) return
   state.updates = answer.ok
     ? { checking: false, checkedAt: answer.answer.checkedAt ?? Date.now(), statuses: answer.answer.statuses ?? {}, errors: answer.answer.errors ?? [] }
     : { ...state.updates, checking: false, errors: [`The check did not run: ${answer.error}`] }
@@ -224,19 +291,86 @@ function moveItem(item, project, scope, copy, opts = {}) {
 
 function render() {
   root.classList.toggle('is-busy', !!state.busy)
+  renderAgent()
   renderUpdatesBar()
   renderTabs()
   renderProblems()
   renderPanel()
   renderBackups()
   renderNotice()
+  renderFoot()
   els.refresh.disabled = !!state.busy || state.loading
+  els.snapshot.hidden = !offers('snapshot')
   els.snapshot.disabled = !!state.busy || !state.view
   els.filterClear.hidden = !state.filter
   els.filter.placeholder = `Filter ${noun(state.tab, 2)} by name`
 }
 
+/**
+ * The agent switcher: the agent shown, where it keeps its setup, and why parts are read-only.
+ * Agents that are not installed stay selectable, so the user can see where they would be configured.
+ */
+function renderAgent() {
+  const agent = currentAgent()
+  els.agent.hidden = !agent
+  if (!agent) return replaceChildren(els.agent)
+  replaceChildren(
+    els.agent,
+    h(
+      'div',
+      { class: 'agent-row' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'agent-btn',
+          'aria-haspopup': 'menu',
+          'aria-label': `Agent: ${agent.name}${agent.detected ? '' : ', not installed'}`,
+          'data-act': 'agent-menu',
+          'data-fid': 'agent',
+          disabled: !!state.busy,
+          title: 'Choose the agent whose setup this panel shows',
+        },
+        h('span', { class: 'agent-name' }, agent.name),
+        icon('chevron', 12),
+      ),
+      agent.detected ? null : h('span', { class: 'tag tag-missing' }, 'Not installed'),
+      h('span', { class: 'agent-home', title: agent.configHome }, agent.configHome),
+    ),
+    agent.note ? h('p', { class: 'agent-note' }, icon('info', 12), h('span', null, agent.note)) : null,
+  )
+}
+
+function openAgentMenu(anchor) {
+  openMenu(anchor, {
+    label: 'Agents',
+    className: 'agent-menu',
+    entries: state.agents.map((a) => ({
+      label: a.name,
+      detail: a.configHome,
+      tag: a.detected ? null : 'Not installed',
+      dim: !a.detected,
+      checked: a.id === state.agent,
+      icon: 'check',
+      onSelect: () => {
+        selectAgent(a.id)
+        els.agent.querySelector('[data-fid="agent"]')?.focus({ preventScroll: true })
+      },
+    })),
+  })
+}
+
+function renderFoot() {
+  const agent = currentAgent()
+  if (!agent || agent.id === 'claude') {
+    return replaceChildren(els.foot, 'Changes apply to new Claude Code sessions, or after ', h('code', null, '/reload-plugins'), '.')
+  }
+  replaceChildren(els.foot, `Changes apply to new ${agent.name} sessions.`)
+}
+
 function renderUpdatesBar() {
+  // Nothing to check when the agent cannot update anything from here.
+  els.updates.hidden = !offers('update')
   const u = state.updates
   const now = Date.now()
   let status
@@ -280,7 +414,7 @@ function renderTabs() {
   const counts = state.view ? countByKind(state.view) : null
   replaceChildren(
     els.tabs,
-    KINDS.map((kind) => {
+    agentKinds().map((kind) => {
       const selected = kind === state.tab
       return h(
         'button',
@@ -306,7 +440,7 @@ function renderTabs() {
 }
 
 function tabUpdates(kind) {
-  if (state.updates.checking) return null
+  if (state.updates.checking || !supports(kind, 'update')) return null
   const n = updatableKeys(state.view, kind, state.updates.statuses).length
   if (!n) return null
   const total = countByKind(state.view)[kind]
@@ -340,8 +474,8 @@ function renderPanel() {
 
 /** The tab's update actions: "Update all (N)" after a check, and Refresh marketplaces on Plugins. */
 function tabTools() {
-  const plugins = state.tab === 'plugins'
-  const keys = state.updates.checking ? [] : updatableKeys(state.view, state.tab, state.updates.statuses)
+  const plugins = state.tab === 'plugins' && supports('plugins', 'refreshMarketplaces')
+  const keys = state.updates.checking || !supports(state.tab, 'updateAll') ? [] : updatableKeys(state.view, state.tab, state.updates.statuses)
   if (!plugins && !keys.length) return null
   const busy = !!state.busy || state.updates.checking
   const n = keys.length
@@ -385,7 +519,7 @@ function skeleton() {
   const widths = [62, 48, 70, 55, 40, 66]
   return h(
     'div',
-    { class: 'skeleton', 'aria-busy': 'true', 'aria-label': 'Loading your Claude Code setup' },
+    { class: 'skeleton', 'aria-busy': 'true', 'aria-label': `Loading your ${agentName()} setup` },
     h('div', { class: 'sk-head' }, h('span', { class: 'sk-bar', style: 'width:72px' })),
     widths.map((w) => h('div', { class: 'sk-row' }, h('span', { class: 'sk-bar', style: `width:${w}%` }), h('span', { class: 'sk-bar sk-sub', style: `width:${w - 22}%` }))),
   )
@@ -396,7 +530,7 @@ function loadErrorState() {
     'div',
     { class: 'state state-error', role: 'alert' },
     icon('alert', 18),
-    h('p', { class: 'state-title' }, 'Could not read your Claude Code settings'),
+    h('p', { class: 'state-title' }, `Could not read your ${agentName()} settings`),
     h('p', { class: 'state-detail' }, state.loadError),
     h('p', { class: 'state-hint' }, 'Fix the file named above, then try again. Nothing was changed.'),
     h('button', { type: 'button', class: 'btn btn-secondary', 'data-act': 'refresh', 'data-fid': 'retry' }, icon('refresh', 14), 'Try again'),
@@ -458,15 +592,19 @@ function renderGroup(group) {
 function emptyGroupText(group) {
   if (state.filter.trim()) return `No match in ${group.project ? projectName(group.project) : 'Global'}.`
   const n = noun(state.tab, 2)
-  return group.project
-    ? `No ${n} in this project.`
-    : `No global ${n}. Drag one here from a project to use it everywhere.`
+  const agent = currentAgent()
+  if (agent && !agent.detected && !group.project) return `${agent.name} is not installed on this machine. Its ${n} would live in ${agent.configHome}.`
+  if (group.project) return `No ${n} in this project.`
+  return supports(state.tab, 'move') ? `No global ${n}. Drag one here from a project to use it everywhere.` : `No global ${n}.`
 }
+
+/** The agent can move items of this class: drag, Move to… and Copy to… are offered. */
+const canMove = (item) => supports(item.kind, 'move')
 
 function renderItem(item) {
   const busy = !!state.busy
   const working = isWorking(item)
-  const draggable = item.movable && !busy
+  const draggable = item.movable && canMove(item) && !busy
   return h(
     'li',
     {
@@ -478,7 +616,9 @@ function renderItem(item) {
     h(
       'div',
       { class: 'row' },
-      h('span', { class: `grip${item.movable ? '' : ' is-locked'}`, title: item.movable ? 'Drag to move · ⌥ drag to copy' : item.notMovableReason ?? 'Cannot be moved' }, icon(item.movable ? 'grip' : 'lock', 14)),
+      canMove(item)
+        ? h('span', { class: `grip${item.movable ? '' : ' is-locked'}`, title: item.movable ? 'Drag to move · ⌥ drag to copy' : item.notMovableReason ?? 'Cannot be moved' }, icon(item.movable ? 'grip' : 'lock', 14))
+        : h('span', { class: 'grip', 'aria-hidden': 'true' }),
       h('div', { class: 'main' }, itemMain(item)),
       h('div', { class: 'trail' }, itemTrail(item, busy)),
     ),
@@ -527,7 +667,7 @@ function itemMain(item) {
 }
 
 function notMovable(item) {
-  return item.movable ? null : h('p', { class: 'note' }, icon('lock', 12), h('span', null, item.notMovableReason ?? 'This item cannot be moved.'))
+  return item.movable || !canMove(item) ? null : h('p', { class: 'note' }, icon('lock', 12), h('span', null, item.notMovableReason ?? 'This item cannot be moved.'))
 }
 
 const CONTRIB = [
@@ -632,7 +772,7 @@ function updateStatus(item) {
   if (!st) return null
   const latest = shortVersion(st.latest)
   if (st.status === 'available') {
-    if (s.type === 'manual') return h('span', { class: 'upd is-available', title: st.note ?? null }, latest ? `${latest} available` : 'Update available')
+    if (s.type === 'manual' || !supports(item.kind, 'update')) return h('span', { class: 'upd is-available', title: st.note ?? null }, latest ? `${latest} available` : 'Update available')
     return h(
       'button',
       {
@@ -661,7 +801,7 @@ function updateStatus(item) {
 
 function itemTrail(item, busy) {
   const parts = []
-  if (item.plugin && item.project !== null) {
+  if (item.plugin && item.project !== null && supports(item.kind, 'clearOverride')) {
     parts.push(
       h(
         'button',
@@ -678,7 +818,11 @@ function itemTrail(item, busy) {
       ),
     )
   }
-  if (item.plugin) {
+  if (item.plugin && !supports(item.kind, 'setEnabled')) {
+    // Read-only: the state is shown, never a switch that would be refused.
+    const on = item.plugin.enabled
+    parts.push(h('span', { class: 'onoff', title: `${on ? 'On' : 'Off'}; ${agentName()} plugins are read-only here` }, on ? 'On' : 'Off'))
+  } else if (item.plugin) {
     const on = item.plugin.enabled
     parts.push(
       h(
@@ -698,6 +842,8 @@ function itemTrail(item, busy) {
       ),
     )
   }
+  // The overflow menu only when it has something the agent supports.
+  if (!menuEntries(item).length) return parts
   parts.push(
     h(
       'button',
@@ -771,6 +917,9 @@ function updateConfirmBox(name, busy) {
 
 function renderBackups() {
   const backups = [...(state.view?.backups ?? [])].sort((a, b) => b.at - a.at)
+  // An agent that cannot back up or restore, and has no backups, has nothing to show here.
+  els.backups.hidden = !offers('snapshot') && !offers('restore') && backups.length === 0
+  if (els.backups.hidden) return replaceChildren(els.backups)
   const open = state.backupsOpen
   const busy = !!state.busy
   const now = Date.now()
@@ -805,16 +954,18 @@ function renderBackups() {
                   h('div', { class: 'name', title: b.target }, b.target.split(/[\\/]/).pop()),
                   h('div', { class: 'meta' }, h('span', { class: 'backup-path', title: b.target }, tildify(b.target)), h('time', { datetime: new Date(b.at).toISOString(), title: new Date(b.at).toLocaleString() }, relativeTime(b.at, now))),
                 ),
-                h(
-                  'button',
-                  { type: 'button', class: 'btn btn-ghost btn-xs', 'data-act': 'restore', 'data-name': b.name, 'data-fid': `restore:${b.name}`, disabled: busy },
-                  icon('restore', 13),
-                  'Restore',
-                ),
+                supportsAny('restore')
+                  ? h(
+                      'button',
+                      { type: 'button', class: 'btn btn-ghost btn-xs', 'data-act': 'restore', 'data-name': b.name, 'data-fid': `restore:${b.name}`, disabled: busy },
+                      icon('restore', 13),
+                      'Restore',
+                    )
+                  : null,
               ),
             ),
           )
-        : h('p', { class: 'acc-empty' }, 'No backups yet. Every change backs up its file first; Create backup saves them all at once.'),
+        : h('p', { class: 'acc-empty' }, offers('snapshot') ? 'No backups yet. Every change backs up its file first; Create backup saves them all at once.' : 'No backups yet. Every change backs up its file first.'),
     ),
   )
 }
@@ -877,14 +1028,18 @@ function openPickerFor(item, anchor, copy) {
   })
 }
 
-function openItemMenu(item, anchor) {
+/** The overflow menu of an item: only the actions its agent supports for its class. */
+function menuEntries(item, anchor) {
   const global = item.project === null
-  const entries = [
-    { label: 'Move to…', icon: 'move', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, false) },
-    { label: 'Copy to…', icon: 'copy', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, true) },
-  ]
+  const entries = []
+  if (canMove(item)) {
+    entries.push(
+      { label: 'Move to…', icon: 'move', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, false) },
+      { label: 'Copy to…', icon: 'copy', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, true) },
+    )
+  }
   const source = item.updateSource
-  if (source) {
+  if (source && supports(item.kind, 'update')) {
     const manual = source.type === 'manual'
     const latest = state.updates.statuses[item.key]?.status === 'available' ? shortVersion(state.updates.statuses[item.key].latest) : null
     entries.push({
@@ -895,9 +1050,9 @@ function openItemMenu(item, anchor) {
       onSelect: () => updateItem(item),
     })
   }
-  entries.push('separator')
+  const end = []
   if (item.plugin && global) {
-    entries.push({
+    if (supports(item.kind, 'uninstall')) end.push({
       label: 'Uninstall…',
       icon: 'trash',
       danger: true,
@@ -910,9 +1065,9 @@ function openItemMenu(item, anchor) {
       },
     })
   } else if (item.plugin) {
-    entries.push({ label: 'Clear override', icon: 'eraser', onSelect: () => run({ type: 'clearOverride', key: item.key }, { focusNotice: true }) })
-  } else {
-    entries.push({
+    if (supports(item.kind, 'clearOverride')) end.push({ label: 'Clear override', icon: 'eraser', onSelect: () => run({ type: 'clearOverride', key: item.key }, { focusNotice: true }) })
+  } else if (supports(item.kind, 'remove')) {
+    end.push({
       label: 'Remove',
       icon: 'trash',
       danger: true,
@@ -920,7 +1075,12 @@ function openItemMenu(item, anchor) {
       onSelect: () => run({ type: 'remove', key: item.key }, { focusNotice: true }),
     })
   }
-  openMenu(anchor, { label: `Actions for ${item.name}`, entries })
+  return entries.length && end.length ? [...entries, 'separator', ...end] : [...entries, ...end]
+}
+
+function openItemMenu(item, anchor) {
+  const entries = menuEntries(item, anchor)
+  if (entries.length) openMenu(anchor, { label: `Actions for ${item.name}`, entries })
 }
 
 // ---------- Events ----------
@@ -933,6 +1093,8 @@ document.addEventListener('click', (e) => {
   switch (target.dataset.act) {
     case 'tab':
       return selectTab(target.dataset.kind)
+    case 'agent-menu':
+      return state.agents?.length && openAgentMenu(target)
     case 'refresh':
       return load()
     case 'snapshot':
@@ -1001,7 +1163,8 @@ document.addEventListener('click', (e) => {
 })
 
 function selectTab(kind, focus = false) {
-  if (!KINDS.includes(kind)) return
+  if (!agentKinds().includes(kind)) return
+  state.preferredTab = kind
   if (kind !== state.tab) {
     state.tab = kind
     state.confirm = null
@@ -1013,11 +1176,12 @@ function selectTab(kind, focus = false) {
 }
 
 els.tabs.addEventListener('keydown', (e) => {
-  const i = KINDS.indexOf(state.tab)
-  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: KINDS.length - 1 }[e.key]
+  const kinds = agentKinds()
+  const i = kinds.indexOf(state.tab)
+  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: kinds.length - 1 }[e.key]
   if (next === undefined) return
   e.preventDefault()
-  selectTab(KINDS[(next + KINDS.length) % KINDS.length], true)
+  selectTab(kinds[(next + kinds.length) % kinds.length], true)
   document.getElementById(`tab-${state.tab}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
 })
 
@@ -1118,7 +1282,7 @@ document.addEventListener('dragstart', (e) => {
   const li = e.target.closest?.('.item[draggable="true"]')
   if (!li || state.busy) return
   const item = itemByKey(li.dataset.key)
-  if (!item?.movable) return e.preventDefault()
+  if (!item?.movable || !canMove(item)) return e.preventDefault()
   closePopover({ restoreFocus: false })
   e.dataTransfer.effectAllowed = 'copyMove'
   e.dataTransfer.setData(DRAG_TYPE, item.key)

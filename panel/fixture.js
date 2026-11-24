@@ -1,7 +1,9 @@
 // In-memory backend for the panel outside Orca (and for the Playwright tests).
 // It answers the same contract as the worker: 'view.get' -> ViewAnswer, 'action.run' -> ActionAnswer,
-// 'updates.check' -> UpdatesAnswer. The data is synthetic; nothing here reads or writes the real disk
-// or the network. Every request is recorded in `requests` so tests can see exactly what was sent.
+// 'updates.check' -> UpdatesAnswer, each for one agent (Claude Code, Codex, Gemini CLI, Copilot CLI).
+// The data is synthetic; nothing here reads or writes the real disk or the network. An action the
+// agent does not support is refused, like the real providers do. Every request is recorded in
+// `requests` so tests can see exactly what was sent.
 
 const HOME = '/Users/you'
 const P_STORE = `${HOME}/code/storefront`
@@ -15,39 +17,68 @@ const CLAUDE_JSON = `${HOME}/.claude.json`
 const settingsFile = (project, scope) =>
   project === null ? USER_SETTINGS : `${project}/.claude/${scope === 'local' ? 'settings.local.json' : 'settings.json'}`
 
-function sourceFor(kind, name, project, scope) {
-  switch (kind) {
-    case 'plugins':
-    case 'hooks':
-      return settingsFile(project, scope)
-    case 'skills':
-      return `${project ?? `${HOME}`}/.claude/skills/${name}/SKILL.md`
-    case 'agents':
-      return `${project ?? `${HOME}`}/.claude/agents/${name}.md`
-    case 'mcp':
-      return project === null || scope === 'local' ? CLAUDE_JSON : `${project}/.mcp.json`
-  }
+const CODEX_CONFIG = `${HOME}/.codex/config.toml`
+const GEMINI_SETTINGS = `${HOME}/.gemini/settings.json`
+
+/** Where each agent keeps an item of each class; Claude Code's layout is the real one. */
+const LAYOUT = {
+  claude(kind, name, project, scope) {
+    switch (kind) {
+      case 'plugins':
+      case 'hooks':
+        return settingsFile(project, scope)
+      case 'skills':
+        return `${project ?? `${HOME}`}/.claude/skills/${name}/SKILL.md`
+      case 'agents':
+        return `${project ?? `${HOME}`}/.claude/agents/${name}.md`
+      case 'mcp':
+        return project === null || scope === 'local' ? CLAUDE_JSON : `${project}/.mcp.json`
+    }
+  },
+  codex(kind, name, project) {
+    switch (kind) {
+      case 'skills':
+        return `${project ?? HOME}/.codex/skills/${name}/SKILL.md`
+      case 'hooks':
+        return `${HOME}/.codex/hooks.json`
+      default:
+        return project === null ? CODEX_CONFIG : `${project}/.codex/config.toml`
+    }
+  },
+  gemini(kind, name, project) {
+    if (kind === 'plugins') return `${HOME}/.gemini/extensions/${name}/gemini-extension.json`
+    return project === null ? GEMINI_SETTINGS : `${project}/.gemini/settings.json`
+  },
+  copilot(kind, name) {
+    return kind === 'mcp' ? `${HOME}/.copilot/mcp-config.json` : `${HOME}/.copilot/${kind}/${name}`
+  },
 }
 
-function keyFor(kind, name, project, scope) {
-  const source = sourceFor(kind, name, project, scope)
+function sourceFor(kind, name, project, scope, agent = 'claude') {
+  return LAYOUT[agent](kind, name, project, scope)
+}
+
+function keyFor(kind, name, project, scope, agent = 'claude') {
+  const source = sourceFor(kind, name, project, scope, agent)
   const shared = kind === 'plugins' || kind === 'mcp' || kind === 'hooks'
   return shared ? `${kind}:${source}#${project ?? '~'}#${name}` : `${kind}:${source}`
 }
 
 const none = () => ({ skills: [], agents: [], commands: [], hooks: [], mcpServers: [] })
 
-function plugin(id, version, enabled, contributes = {}, project = null, scope = 'user') {
-  const name = id.slice(0, id.lastIndexOf('@'))
-  const marketplace = id.slice(id.lastIndexOf('@') + 1)
+function plugin(id, version, enabled, contributes = {}, project = null, scope = 'user', agent = 'claude') {
+  const at = id.lastIndexOf('@')
+  const name = at === -1 ? id : id.slice(0, at)
+  const marketplace = at === -1 ? '' : id.slice(at + 1)
   return {
-    key: keyFor('plugins', id, project, scope),
+    key: keyFor('plugins', agent === 'claude' ? id : name, project, scope, agent),
+    agent,
     kind: 'plugins',
     name,
     description: '',
     project,
     scope,
-    source: sourceFor('plugins', id, project, scope),
+    source: sourceFor('plugins', agent === 'claude' ? id : name, project, scope, agent),
     movable: true,
     removable: project !== null,
     plugin: {
@@ -60,21 +91,22 @@ function plugin(id, version, enabled, contributes = {}, project = null, scope = 
       installs: [{ scope: 'user', project: null }],
     },
     // Installs update from their marketplace; a project override only switches the global install.
-    ...(project === null ? { updateSource: { type: 'plugin', label: marketplace, current: version } } : {}),
+    ...(project === null && agent === 'claude' ? { updateSource: { type: 'plugin', label: marketplace, current: version } } : {}),
   }
 }
 
 const skillsCli = (repo, hash) => ({ updateSource: { type: 'skills-cli', label: repo, current: hash } })
 
-function simple(kind, name, description, project = null, scope = project ? 'project' : 'user', extra = {}) {
+function simple(kind, name, description, project = null, scope = project ? 'project' : 'user', extra = {}, agent = 'claude') {
   return {
-    key: keyFor(kind, name, project, scope),
+    key: keyFor(kind, name, project, scope, agent),
+    agent,
     kind,
     name,
     description,
     project,
     scope,
-    source: sourceFor(kind, name, project, scope),
+    source: sourceFor(kind, name, project, scope, agent),
     movable: true,
     removable: true,
     ...extra,
@@ -158,6 +190,99 @@ function linkSharedNames(items) {
   return items
 }
 
+// ---------- Agents ----------
+
+const KINDS = ['plugins', 'skills', 'agents', 'mcp', 'hooks']
+/** Backups cover every file the agent writes, so each writable class can back up and restore. */
+const FILES = ['snapshot', 'restore']
+
+/** Every agent this fixture knows, as View.agents lists them. */
+const AGENTS = [
+  {
+    id: 'claude',
+    name: 'Claude Code',
+    detected: true,
+    kinds: [...KINDS],
+    supports: {
+      plugins: ['move', 'remove', 'setEnabled', 'clearOverride', 'uninstall', 'update', 'updateAll', 'refreshMarketplaces', ...FILES],
+      skills: ['move', 'remove', 'update', 'updateAll', ...FILES],
+      agents: ['move', 'remove', ...FILES],
+      mcp: ['move', 'remove', 'update', 'updateAll', ...FILES],
+      hooks: ['move', 'remove', ...FILES],
+    },
+    configHome: '~/.claude',
+  },
+  {
+    id: 'codex',
+    name: 'Codex',
+    detected: true,
+    kinds: [...KINDS],
+    supports: {
+      skills: ['move', 'remove', ...FILES],
+      mcp: ['move', 'remove', ...FILES],
+    },
+    configHome: '~/.codex',
+    note: 'Plugins, agents and hooks are read-only: this app does not edit config.toml or hooks.json yet.',
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini CLI',
+    detected: true,
+    kinds: ['plugins', 'mcp'],
+    supports: {
+      plugins: ['setEnabled', ...FILES],
+      mcp: ['move', 'remove', ...FILES],
+    },
+    configHome: '~/.gemini',
+    note: 'Extensions show as plugins; turn them on and off here, install and update them with gemini extensions.',
+  },
+  {
+    id: 'copilot',
+    name: 'Copilot CLI',
+    detected: false,
+    kinds: ['plugins', 'skills', 'agents', 'mcp'],
+    supports: {},
+    configHome: '~/.copilot',
+  },
+]
+
+/** Read-only classes: nothing moves or is removed, whatever the panel sends. */
+const readOnly = { movable: false, notMovableReason: 'Read-only for this agent.', removable: false }
+
+function codexItems() {
+  const a = 'codex'
+  const ext = (id, version, enabled) => ({ ...plugin(id, version, enabled, {}, null, 'user', a), ...readOnly })
+  return [
+    ext('github@openai-curated', '0.3.1', true),
+    ext('linear@openai-curated', '0.2.0', false),
+    simple('skills', 'openai-docs', 'Look up the OpenAI API reference and cite the page it came from.', null, 'user', {}, a),
+    simple('skills', 'pr-summary', 'Summarise a pull request: what changed, why, and what to check.', null, 'user', {}, a),
+    simple('skills', 'release-checklist', 'The steps to cut a gateway release, with the checks before each tag.', P_API, 'project', {}, a),
+    simple('agents', 'reviewer', 'Reviews the current diff for bugs before you commit.', null, 'user', readOnly, a),
+    simple('agents', 'explorer', 'Maps an unfamiliar module and reports the entry points.', null, 'user', readOnly, a),
+    simple('mcp', 'context7', '', null, 'user', { mcp: { transport: 'stdio', target: npxContext7('2.2.5') } }, a),
+    simple('mcp', 'figma', '', null, 'user', { mcp: { transport: 'http', target: 'https://mcp.figma.com/mcp' } }, a),
+    simple('hooks', 'Stop', '', null, 'user', { ...readOnly, hook: { event: 'Stop', matcher: '', command: 'say "Codex is done"' } }, a),
+  ]
+}
+
+function geminiItems() {
+  const a = 'gemini'
+  const ext = (id, version, enabled) => ({ ...plugin(id, version, enabled, {}, null, 'user', a), movable: false, notMovableReason: 'Extensions are installed per user.' })
+  return [
+    ext('conductor', '0.3.0', true),
+    ext('security', '0.4.1', false),
+    ext('code-review', '0.1.0', true),
+    simple('mcp', 'github', '', null, 'user', { mcp: { transport: 'http', target: 'https://api.githubcopilot.com/mcp/' } }, a),
+    simple('mcp', 'context7', '', null, 'user', { mcp: { transport: 'stdio', target: npxContext7('2.2.5') } }, a),
+    simple('mcp', 'playwright', '', P_STORE, 'project', { mcp: { transport: 'stdio', target: 'npx @playwright/mcp@latest' } }, a),
+  ]
+}
+
+const SEEDS = { claude: seedItems, codex: codexItems, gemini: geminiItems, copilot: () => [] }
+/** The files each agent always has a version for, even with no items in them. */
+const BASE_FILES = { claude: [USER_SETTINGS, CLAUDE_JSON], codex: [CODEX_CONFIG], gemini: [GEMINI_SETTINGS], copilot: [] }
+
 const npxContext7 = (version) => `npx -y --package=@upstash/context7-mcp@${version} -- context7-mcp`
 
 /** What the remote side has now, by plugin id, skill name or npm package. Absent = unknown. */
@@ -201,15 +326,16 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
 const basename = (path) => path.split('/').filter(Boolean).pop()
 const where = (project) => (project ? basename(project) : 'Global')
 
-export function createFixtureBackend({ variant = 'default', latency = 150, now = () => Date.now() } = {}) {
-  let items = variant === 'empty' ? [] : seedItems()
+/** One agent's setup in memory: its items, file versions and backups. */
+function createStore(agent, { variant, now }) {
+  let items = variant === 'empty' ? [] : SEEDS[agent.id]()
   let rev = 1
   let seq = 0
   /** name -> { entry, items } */
   const backups = new Map()
 
   const t0 = now()
-  if (variant !== 'empty') {
+  if (variant !== 'empty' && agent.id === 'claude') {
     for (const [target, ago] of [[USER_SETTINGS, 2 * 3600e3], [`${P_STORE}/.claude/settings.json`, 26 * 3600e3], [CLAUDE_JSON, 5 * 86400e3]]) {
       addBackup(target, t0 - ago, clone(items))
     }
@@ -222,18 +348,20 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
   }
 
   function files() {
-    const set = new Set([USER_SETTINGS, CLAUDE_JSON])
+    const set = new Set(BASE_FILES[agent.id])
     for (const item of items) if (item.kind !== 'skills' && item.kind !== 'agents') set.add(item.source)
     return [...set].sort()
   }
 
   function view() {
     return {
+      agents: clone(AGENTS),
+      agent: agent.id,
       items: clone(items),
       projects: [...PROJECTS],
       versions: Object.fromEntries(files().map((f) => [f, `r${rev}`])),
       backups: [...backups.values()].map((b) => b.entry).sort((a, b) => b.at - a.at),
-      problems: variant === 'empty' ? [] : [`${P_API}/.claude/settings.local.json: "enabledPlugins" names agent-sdk-dev@old-market, which is not installed.`],
+      problems: variant === 'empty' || agent.id !== 'claude' ? [] : [`${P_API}/.claude/settings.local.json: "enabledPlugins" names agent-sdk-dev@old-market, which is not installed.`],
     }
   }
 
@@ -260,13 +388,13 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
       const existing = items.find((i) => i.kind === 'plugins' && i.plugin.id === id && i.project === project)
       if (project === null) {
         if (existing) existing.plugin.enabled = true
-        else items.push(plugin(id, item.plugin.version, true, item.plugin.contributes))
+        else items.push(plugin(id, item.plugin.version, true, item.plugin.contributes, null, 'user', agent.id))
         if (!copy) items = items.filter((i) => i !== item)
         linkSharedNames(items)
         return { ok: true, message: `${verb} ${item.name} to Global: on everywhere${copy ? '' : `, override in ${where(item.project)} cleared`}.`, undo, warning }
       }
       if (existing) items = items.filter((i) => i !== existing)
-      items.push(plugin(id, item.plugin.version, true, item.plugin.contributes, project, scope))
+      items.push(plugin(id, item.plugin.version, true, item.plugin.contributes, project, scope, agent.id))
       if (!copy) {
         if (item.project === null) item.plugin.enabled = false
         else items = items.filter((i) => i !== item)
@@ -281,7 +409,13 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
       backups.delete(undo.name)
       return fail('exists', `${where(project)} already has ${item.kind === 'mcp' ? 'an MCP server' : `a ${item.kind.slice(0, -1)}`} named ${item.name}. Remove or rename it first.`)
     }
-    const next = { ...clone(item), project, scope, key: keyFor(item.kind, item.name, project, scope), source: sourceFor(item.kind, item.name, project, scope) }
+    const next = {
+      ...clone(item),
+      project,
+      scope,
+      key: keyFor(item.kind, item.name, project, scope, agent.id),
+      source: sourceFor(item.kind, item.name, project, scope, agent.id),
+    }
     if (!copy) items = items.filter((i) => i !== item)
     items.push(next)
     return { ok: true, message: `${verb} ${item.name} to ${where(project)}.`, undo, warning }
@@ -302,7 +436,7 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
       if (latest === null) statuses[item.key] = { status: 'unknown', latest: null, note: NO_VERSION(source.label) }
       else statuses[item.key] = { status: latest === source.current ? 'current' : 'available', latest }
     }
-    return { checkedAt: now(), statuses, errors: variant === 'empty' ? [] : [...CHECK_ERRORS] }
+    return { checkedAt: now(), statuses, errors: variant === 'empty' || agent.id !== 'claude' ? [] : [...CHECK_ERRORS] }
   }
 
   const short = (v) => (/^[0-9a-f]{12,}$/.test(v) ? v.slice(0, 7) : v)
@@ -430,21 +564,58 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
     }
   }
 
+  /** The class an action acts on; null for actions over every file (snapshot, restore). */
+  function kindOf(action) {
+    if (action.type === 'updateAll') return action.kind
+    if (action.type === 'refreshMarketplaces') return 'plugins'
+    if (action.type === 'snapshot' || action.type === 'restore') return null
+    return find(action.key)?.kind ?? null
+  }
+
+  /** Refuses what the agent does not support, as a real provider would, before touching anything. */
+  function refusal(action) {
+    const kind = kindOf(action)
+    const lists = kind ? [agent.supports[kind] ?? []] : Object.values(agent.supports)
+    if (lists.some((list) => list.includes(action.type))) return null
+    if (kind === null && action.key) return null // a missing item: run() reports it
+    const what = kind ? `${kind === 'mcp' ? 'MCP servers' : kind}` : 'backups'
+    return fail('unsupported', `${agent.name} does not support "${action.type}" for ${what} in this app.`)
+  }
+
+  function act(input) {
+    const current = view().versions
+    const sent = input?.versions ?? {}
+    const stale = Object.keys(current).some((f) => sent[f] !== undefined && sent[f] !== current[f])
+    if (stale) return { result: fail('stale', 'Your settings changed since this list was read. The list is refreshed; try again.'), view: viewAnswer() }
+    const result = refusal(input.action) ?? run(input.action)
+    if (result.ok && input.action.type !== 'snapshot' && input.action.type !== 'refreshMarketplaces') rev++
+    return { result, view: viewAnswer() }
+  }
+
+  return { viewAnswer, act, checkUpdates }
+}
+
+export function createFixtureBackend({ variant = 'default', latency = 150, now = () => Date.now() } = {}) {
+  const stores = new Map(AGENTS.map((agent) => [agent.id, createStore(agent, { variant, now })]))
+  /** Without an agent, the first detected one, as the real backend does. */
+  const defaultAgent = AGENTS.find((a) => a.detected).id
+  const storeFor = (input) => stores.get(input?.agent ?? defaultAgent)
+  const unknown = (input) => `Unknown agent "${input?.agent}".`
+
   function handle(name, input) {
+    const store = storeFor(input)
     if (name === 'view.get') {
       if (variant === 'error') return { ok: false, error: `Could not read ${USER_SETTINGS}: Unexpected token } in JSON at position 812.` }
-      return viewAnswer()
+      return store ? store.viewAnswer() : { ok: false, error: unknown(input) }
     }
     if (name === 'action.run') {
-      const current = view().versions
-      const sent = input?.versions ?? {}
-      const stale = Object.keys(current).some((f) => sent[f] !== undefined && sent[f] !== current[f])
-      if (stale) return { result: fail('stale', 'Your settings changed since this list was read. The list is refreshed; try again.'), view: viewAnswer() }
-      const result = run(input.action)
-      if (result.ok && input.action.type !== 'snapshot' && input.action.type !== 'refreshMarketplaces') rev++
-      return { result, view: viewAnswer() }
+      if (!store) return { result: { ok: false, reason: 'unknown_agent', message: unknown(input) }, view: { ok: false, error: unknown(input) } }
+      return store.act(input)
     }
-    if (name === 'updates.check') return checkUpdates()
+    if (name === 'updates.check') {
+      if (!store) throw Object.assign(new Error(unknown(input)), { code: 'unknown_agent' })
+      return store.checkUpdates()
+    }
     throw Object.assign(new Error(`No handler named ${name}`), { code: 'unknown_method' })
   }
 
