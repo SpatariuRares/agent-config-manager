@@ -94,6 +94,56 @@ const ROWS: Row[] = [
   ['describe an http server', sealed(http({ url: 'https://api.example/mcp?api_key=abc123secret', headers: { A: 'b' } })), 'describe', { shows: { transport: 'http', target: 'https://api.example/mcp?api_key=<redacted>' } }]
 ]
 
+/** A token followed by characters a token cannot hold: the word still starts with a credential. */
+const TAILED = [`${SK}$x`, `${GHP}!`, `${GHP}#frag`, `x#${GHP}`]
+
+test('a token followed by $, !, # (or after one) is refused by every command line and team file, kept by a private file', () => {
+  for (const to of [ARGV, ARGV_TEAM, TEAM, PRIVATE]) {
+    for (const value of TAILED) {
+      const cases: [McpConfig, string][] = [
+        [stdio({ args: ['server', value] }), 'args[1]'],
+        [stdio({ args: ['server', `FOO=${value}`] }), 'args[1]'],
+        [stdio({ command: value }), 'command'],
+        [stdio({ env: { CFG: value } }), 'env.CFG'],
+        [http({ headers: { 'X-Region': value } }), 'headers.X-Region'],
+        [http({ url: `https://api.example/mcp#${value}` }), 'url']
+      ]
+      for (const [config, path] of cases) {
+        const admitted = admitMcp(config, to)
+        const label = `${to.label} (team: ${to.team}) ${path} = ${value}`
+        if (to === PRIVATE) {
+          assert.equal(admitted.ok, true, label)
+          continue
+        }
+        assert.equal(admitted.ok, false, `${label}: admitted`)
+        if (admitted.ok) continue
+        assert.equal(admitted.reason, 'secret', `${label}: ${admitted.message}`)
+        assert.match(admitted.message, new RegExp(`[(, ]${path.replace(/[[\].]/g, '\\$&')}[,)]`), `${label}: ${admitted.message}`)
+        assert.ok(!admitted.message.includes(value), `${label}: the message shows the value`)
+      }
+    }
+  }
+})
+
+test('under a secret-named key, a value with a literal next to its reference is not a reference', () => {
+  for (const to of [ARGV, ARGV_TEAM, TEAM]) {
+    for (const [key, value] of [['TOKEN', '${A}hunter2'], ['API_KEY', 'hunter2${A}'], ['PASSWORD', 'pre-${A}'], ['MY_SECRET', '${A}:x'], ['AUTH', '${A}${B}z']]) {
+      const admitted = admitMcp(stdio({ env: { [key]: value } }), to)
+      assert.equal(admitted.ok, false, `${to.label} (team: ${to.team}) env.${key} = ${value}: admitted`)
+      assert.ok(!admitted.ok && admitted.reason === 'secret' && admitted.message.includes(`env.${key}`) && !admitted.message.includes('hunter2'), `${to.label}: ${!admitted.ok && admitted.message}`)
+    }
+    const headers = admitMcp(http({ headers: { Authorization: '${A}hunter2' } }), to)
+    assert.equal(headers.ok, false, `${to.label}: a header with a literal tail was admitted`)
+  }
+  // References only, an auth scheme with a reference, and a reference with a path under a harmless name stay fine.
+  for (const to of [ARGV, ARGV_TEAM, TEAM]) {
+    const ok = admitMcp(stdio({ env: { TOKEN: '${TOKEN}', API_KEY: '${A}${B}', HOME_DIR: '${HOME}/bin' } }), to)
+    assert.equal(ok.ok, true, `${to.label}: ${!ok.ok && ok.message}`)
+    const bearer = admitMcp(http({ headers: { Authorization: 'Bearer ${TOKEN}', 'X-Api-Key': '${KEY}' } }), to)
+    assert.equal(bearer.ok, true, `${to.label}: ${!bearer.ok && bearer.message}`)
+  }
+})
+
 test('MCP server policy: config x destination -> outcome, with field paths and never values', () => {
   for (const [label, config, to, expected] of ROWS) {
     if (to === 'describe') {

@@ -6,10 +6,19 @@ export const REDACTED = '<redacted>'
 
 /** A name that holds a credential: API_KEY, --token, access_token, password, Authorization... */
 const SECRET_NAME = /(key|token|secret|passw(or)?d|pwd|auth|bearer|credential|cookie|session)/i
+/** Whether a name (an env variable, a header, a flag, a JSON key) says it holds a credential. */
+export const isSecretName = (name: string) => SECRET_NAME.test(name)
 /** Flags whose next word is a credential: any flag with a secret name, plus `-k`, `-H` and `--header`. */
 const isSecretFlag = (word: string) => /^-{1,2}[\w-]+$/.test(word) && (/^(-k|-H|--header)$/.test(word) || SECRET_NAME.test(word))
-/** Well-known token prefixes (OpenAI, Stripe, GitHub, GitLab, Slack, AWS, Google, JWT). */
-const TOKEN_PREFIX = /^(sk-|sk_|pk_|rk_|ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|glpat-|xox[abposr]-|AKIA|ASIA|AIza|ya29\.|eyJ)[A-Za-z0-9._+/=-]{8,}$/
+/**
+ * A well-known token prefix (OpenAI, Stripe, GitHub, GitLab, Slack, AWS, Google, JWT) and 8+ token characters,
+ * where it starts a word: at the start, or after a character that cannot be inside a token (`/`, `:`, `#`, `$`...).
+ * Whatever follows the token does not matter (`sk-live-...$x`, `ghp_...!`, `ghp_...#frag`).
+ */
+const TOKEN_PREFIX = /(?<![A-Za-z0-9._+-])(sk-|sk_|pk_|rk_|ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|glpat-|xox[abposr]-|AKIA|ASIA|AIza|ya29\.|eyJ)[A-Za-z0-9._+/=-]{8,}/
+const TOKEN_AT_START = new RegExp(`^${TOKEN_PREFIX.source}`)
+/** A run of token characters: what the high-entropy rule checks, each run on its own. */
+const TOKEN_RUN = /[A-Za-z0-9+/_=.-]{32,}/g
 const URL_LIKE = /^[a-z][\w+.-]*:\/\//i
 
 /** Bits per character: a random token scores high, a word or a repeated letter low. */
@@ -21,12 +30,24 @@ function entropy(value: string): number {
   return bits
 }
 
-/** A value that looks like a credential whatever its name: a known token prefix, or a long high-entropy string. */
+/** A run of 32+ token characters that is random: letters and digits, high entropy; an absolute path is not one. */
+const highEntropy = (run: string) => !run.startsWith('/') && /[0-9]/.test(run) && /[A-Za-z]/.test(run) && entropy(run) >= 3.5
+
+/**
+ * A value that holds a credential whatever its name: a known token prefix where a word starts, or a long
+ * high-entropy run of token characters, whatever surrounds it. A URL is checked by urlHasSecret instead.
+ */
 export function looksSecret(value: string): boolean {
+  if (URL_LIKE.test(value)) return false
   if (TOKEN_PREFIX.test(value)) return true
-  // An absolute path or a package spec is not a token, however long.
-  if (value.length < 32 || value.startsWith('/') || !/^[A-Za-z0-9+/_=.-]+$/.test(value)) return false
-  return /[0-9]/.test(value) && /[A-Za-z]/.test(value) && entropy(value) >= 3.5
+  return (value.match(TOKEN_RUN) ?? []).some(highEntropy)
+}
+
+/** A value that starts with a credential (`sk-live-...$x`, `ghp_...#frag`): the whole word is hidden, not just the token. */
+function startsSecret(value: string): boolean {
+  if (URL_LIKE.test(value)) return false
+  if (TOKEN_AT_START.test(value)) return true
+  return highEntropy(/^[A-Za-z0-9+/_=.-]{32,}/.exec(value)?.[0] ?? '')
 }
 
 /**
@@ -65,7 +86,7 @@ export function urlHasSecret(url: string): boolean {
   if (parsed.username || parsed.password) return true
   if (pathHasSecret(parsed.pathname)) return true
   if ([...parsed.searchParams].some(([key, value]) => SECRET_NAME.test(key) || looksSecret(value))) return true
-  return SECRET_NAME.test(parsed.hash)
+  return SECRET_NAME.test(parsed.hash) || looksSecret(parsed.hash.slice(1))
 }
 
 /**
@@ -107,9 +128,6 @@ const AUTH_SCHEME = /\b(Bearer|Basic)(\s+)([^\s'"]+)/gi
  * (whitespace, `=`, `:`, `,`, `;`, quotes, JSON punctuation, parentheses, `<`, `>`). A `$` that starts a reference ends a word.
  */
 const PIECE = /[a-z][\w+.-]*:\/\/[^\s'"<>`]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|(?:[^\s=:,;'"`{}[\]<>()$]|\$(?!\{))+/gi
-
-/** One piece of a value is a credential: token-shaped, or a known token prefix after a `/` (`${HOME}/ghp_...`). */
-const pieceIsSecret = (piece: string) => looksSecret(piece) || (piece.includes('/') && piece.split('/').some((part) => TOKEN_PREFIX.test(part)))
 
 type Scanned = { text: string; secret: boolean }
 
@@ -166,7 +184,7 @@ function scanValue(value: string, depth = 0): Scanned {
         secret = true
         return redactUrl(piece)
       }
-      if (isReferenceOnly(piece) || !pieceIsSecret(piece)) return piece
+      if (isReferenceOnly(piece) || !looksSecret(piece)) return piece
       secret = true
       return REDACTED
     })
@@ -183,13 +201,13 @@ function redactWord(previous: string | null, word: string): Scanned {
   const assignment = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/s.exec(word)
   if (assignment) {
     const [, name, value] = assignment
-    if (SECRET_NAME.test(name) || looksSecret(value)) return { text: `${name}=${REDACTED}`, secret: true }
+    if (SECRET_NAME.test(name) || startsSecret(value)) return { text: `${name}=${REDACTED}`, secret: true }
     if (URL_LIKE.test(value) && !/\s/.test(value)) return { text: `${name}=${redactUrl(value)}`, secret: urlHasSecret(value) }
     const scanned = scanValue(value)
     return { text: scanned.text === value ? word : `${name}=${scanned.text}`, secret: scanned.secret }
   }
   if (previous !== null && isSecretFlag(previous) && !word.startsWith('-') && !word.includes(REDACTED)) return { text: REDACTED, secret: true }
-  if (looksSecret(word)) return { text: REDACTED, secret: true }
+  if (startsSecret(word)) return { text: REDACTED, secret: true }
   if (URL_LIKE.test(word) && !/\s/.test(word)) return { text: redactUrl(word), secret: urlHasSecret(word) }
   return scanValue(word)
 }

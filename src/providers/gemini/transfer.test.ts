@@ -151,3 +151,14 @@ test('Gemini import: the remove hint of a copied skill names the folder it was c
   assert.ok(m.fs.files[`${GEMINI}/skills/pdf tools;x/SKILL.md`])
   assert.ok(result.message.endsWith(`To remove it: gemini skills uninstall 'pdf tools;x'`), result.message)
 })
+
+test('Gemini export keeps the declared type: a ws server and a server with httpUrl and url are refused, naming the fields', async () => {
+  const fixture = files()
+  fixture[USER_SETTINGS] = json({ mcpServers: { socket: { type: 'ws', url: 'wss://x.example/mcp' }, both: { httpUrl: 'https://a.example/mcp', url: 'https://b.example/mcp' } } })
+  const { deps } = machine({ files: fixture })
+  for (const [name, paths] of [['socket', '(transport)'], ['both', '(httpUrl, url)']]) {
+    const result = (await provider.exportItem!(deps, itemKey('mcp', null, name))) as ActionResult
+    assert.equal(refused(result).reason, 'not-portable', `${name}: ${result.message}`)
+    assert.ok(result.message.includes(paths), `${name}: ${result.message}`)
+  }
+})

@@ -200,12 +200,25 @@ export interface McpServer {
   config: Json
 }
 
-/** The transport Gemini CLI uses (mcp-client.ts createUrlTransport): a url without a type is streamable HTTP. */
+/**
+ * The transport a Gemini CLI server declares (mcp-client.ts createUrlTransport): `httpUrl` is streamable HTTP, a
+ * `url` takes its `type` (none is streamable HTTP), `tcp` is a websocket, and a command is stdio unless it says
+ * otherwise. A declared type is kept as written, so one the destination cannot carry is refused, never rewritten.
+ */
 export function transportOf(config: Json): string {
-  if (typeof config.httpUrl === 'string') return 'http'
-  if (typeof config.url === 'string') return config.type === 'sse' ? 'sse' : 'http'
+  const declared = config.type === undefined || config.type === null ? null : String(config.type)
+  if (typeof config.httpUrl === 'string') return declared ?? 'http'
+  if (typeof config.url === 'string') return declared ?? 'http'
   if (typeof config.tcp === 'string') return 'websocket'
-  return 'stdio'
+  return declared ?? 'stdio'
+}
+
+/** Keys that cannot go together: `httpUrl` with `url` (which one Gemini CLI runs), or `httpUrl` with a type other than http. */
+function malformedKeys(config: Json): string[] {
+  const set = (key: string) => config[key] !== undefined && config[key] !== null
+  if (!set('httpUrl')) return []
+  if (set('url')) return ['httpUrl', 'url']
+  return set('type') && config.type !== 'http' ? ['httpUrl', 'type'] : []
 }
 
 /**
@@ -214,7 +227,8 @@ export function transportOf(config: Json): string {
  */
 export function geminiMcpConfig(name: string, config: Json): McpConfig {
   const { command, args, env, url, httpUrl, tcp, type, headers, ...rest } = config
-  return { name, transport: transportOf(config), command, args, url: httpUrl ?? url ?? tcp, env, headers, rest }
+  const malformed = malformedKeys(config)
+  return { name, transport: transportOf(config), command, args, url: httpUrl ?? url ?? tcp, env, headers, rest, ...(malformed.length > 0 ? { malformed } : {}) }
 }
 
 // --------------------------------------------------------------------------------------------------- the setup

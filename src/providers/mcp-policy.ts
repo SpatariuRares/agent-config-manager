@@ -4,7 +4,7 @@
 // the rules live here only. Its interface is admitMcp and describeMcp; a writer builds argv only from what
 // admitMcp returns, and adds only argv-encoding limits of its own CLI (option-like values, name rules).
 import { isObject } from '../core/json.ts'
-import { argsHaveSecret, redactArgs, redactUrl, textHasSecret, urlHasSecret } from '../core/redact.ts'
+import { argsHaveSecret, isSecretName, redactArgs, redactUrl, textHasSecret, urlHasSecret } from '../core/redact.ts'
 import type { PortableMcp, Refusal } from './types.ts'
 
 export type Transport = 'stdio' | 'http' | 'sse'
@@ -22,6 +22,8 @@ export interface McpConfig {
   env?: unknown
   headers?: unknown
   rest?: Record<string, unknown>
+  /** Keys of the agent's own config that do not fit together (Gemini's `httpUrl` and `url`): refused as shape. */
+  malformed?: readonly string[]
 }
 
 /**
@@ -67,9 +69,16 @@ export type Admitted = { ok: true; server: PortableMcp & { rest: Record<string, 
 
 const TRANSPORTS: readonly string[] = ['stdio', 'http', 'sse']
 const REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/
+const REFERENCES = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g
 
-/** Invariant 1: a reference holds a `${VAR}` and nothing textHasSecret finds (`$x`, `sk-live-...$x`, `${A}sk-live-...` are literals). */
-const isReference = (value: string) => REFERENCE.test(value) && !textHasSecret(value)
+/** Nothing but `${VAR}` references, after an optional auth scheme (`Bearer ${TOKEN}`), and spaces. */
+const referencesOnly = (value: string) => value.replace(REFERENCES, '').replace(/^\s*(Bearer|Basic|Token)\b/i, '').trim() === ''
+
+/**
+ * Invariant 1: a reference holds a `${VAR}` and nothing textHasSecret finds (`$x`, `sk-live-...$x`, `${A}sk-live-...`
+ * are literals); under a secret name (TOKEN, API_KEY, Authorization...) it holds references only (`${A}hunter2` is a literal).
+ */
+const isReference = (key: string, value: string) => REFERENCE.test(value) && !textHasSecret(value) && (!isSecretName(key) || referencesOnly(value))
 
 /** Set, and not an empty list or object: an empty field is no field. */
 const present = (value: unknown) =>
@@ -77,9 +86,9 @@ const present = (value: unknown) =>
 
 const MAPS = ['env', 'headers'] as const
 
-/** The malformed fields: wrong types, or the command or url its transport needs missing. */
+/** The malformed fields: what the adapter found malformed, wrong types, or the command or url its transport needs missing. */
 function shapePaths(config: McpConfig): string[] {
-  const paths: string[] = []
+  const paths: string[] = [...(config.malformed ?? [])]
   for (const field of ['command', 'url'] as const) {
     if (config[field] !== undefined && config[field] !== null && typeof config[field] !== 'string') paths.push(field)
   }
@@ -138,7 +147,7 @@ function secretPaths(config: McpConfig, to: Destination): { literal: string[]; s
   // Invariants 2 and 4: env and header values. A value counts with its name (`API_KEY=...` is secret by name).
   for (const field of MAPS) {
     for (const [key, value] of Object.entries((config[field] as Record<string, string> | undefined) ?? {})) {
-      if (isReference(value)) continue
+      if (isReference(key, value)) continue
       if (to.team) literal.push(`${field}.${key}`)
       else if (argsHaveSecret([`${key.replace(/[^\w.-]/g, '_') || 'value'}=${value}`])) secret.push(`${field}.${key}`)
     }
@@ -153,7 +162,8 @@ const withHint = (message: string, to: Destination) => (to.hint ? `${message} ${
 /**
  * Whether `config` may be written to `to`, and the server to write when it may: only what the destination carries,
  * empty fields dropped, kept `rest` values kept. The invariants:
- * 1. Reference: a value is a reference only if it contains `${VAR}` and textHasSecret finds nothing in it.
+ * 1. Reference: a value is a reference only if it contains `${VAR}` and textHasSecret finds nothing in it; under a
+ *    secret-named key, only if it is nothing but references (an auth scheme before them allowed).
  * 2. Team file: when `to.team`, every env and header value must be a reference.
  * 3. Command line or team file: when `to.argv` is set or `to.team`, nothing in command, args, url or a kept rest
  *    value may look secret.

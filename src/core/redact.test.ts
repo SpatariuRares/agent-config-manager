@@ -1,7 +1,7 @@
 // The shared redaction rules: what every provider shows of MCP targets, hook commands and CLI argv.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { argsHaveSecret, looksSecret, redactArgs, redactCommand, redactUrl, urlHasSecret } from './redact.ts'
+import { argsHaveSecret, looksSecret, redactArgs, redactCommand, redactUrl, textHasSecret, urlHasSecret } from './redact.ts'
 
 const R = '<redacted>'
 
@@ -141,4 +141,48 @@ test('harmless values stay readable and allowed: paths, ports, plain words, ${VA
   for (const word of harmless) assert.equal(argsHaveSecret([word]), false, word)
   assert.deepEqual(redactArgs(harmless), harmless)
   assert.equal(redactCommand('node server.js --port=8080 ${HOME}/bin'), 'node server.js --port=8080 ${HOME}/bin')
+})
+
+test('a known token prefix starting a word is a secret whatever follows it: $, !, #, and the like', () => {
+  const tails = ['$x', '!', '#frag', '@host', '%20', '*', '|tee', '\\n', '?q', '&b']
+  for (const token of [SK, GHP, 'gho_SECRET1234567', 'xoxb-1234-5678-abcdef', 'AKIAIOSFODNN7EXAMPLE']) {
+    for (const tail of tails) {
+      const value = `${token}${tail}`
+      assert.equal(looksSecret(value), true, value)
+      assert.equal(textHasSecret(value), true, value)
+      assert.equal(argsHaveSecret([value]), true, value)
+      assert.equal(argsHaveSecret([`FOO=${value}`]), true, `FOO=${value}`)
+      assert.equal(textHasSecret(`use ${value} here`), true, `use ${value} here`)
+      for (const shown of [...redactArgs([value, `FOO=${value}`]), redactCommand(`run ${value}`)]) {
+        assert.ok(!shown.includes(token), shown)
+        assert.match(shown, /<redacted>/, shown)
+      }
+    }
+  }
+})
+
+test('a known token prefix after a separator inside a word is a secret: x#ghp_..., a:sk-..., /ghp_...', () => {
+  for (const value of [`x#${GHP}`, `a:${SK}`, `see!${SK}`, `\${HOME}/${GHP}`]) {
+    assert.equal(textHasSecret(value), true, value)
+    assert.equal(argsHaveSecret([value]), true, value)
+    assert.ok(!redactArgs([value])[0].includes(value.includes('ghp_') ? GHP : SK), value)
+  }
+})
+
+test('a long high-entropy run starting a word is a secret whatever follows it', () => {
+  const run = 'Qx7vP2mN9kL4rT8wZ3yB6cF1hJ5dG0sA'
+  for (const value of [`${run}$x`, `${run}!`, `${run}#frag`]) {
+    assert.equal(looksSecret(value), true, value)
+    assert.equal(argsHaveSecret([value]), true, value)
+    assert.equal(argsHaveSecret([`FOO=${value}`]), true, `FOO=${value}`)
+    assert.ok(!redactArgs([value])[0].includes(run), value)
+  }
+})
+
+test('separator tails do not turn harmless words into secrets', () => {
+  const harmless = ['/mcp', '--port=8080', '${HOME}/bin', 'Bearer ${TOKEN}', '${TOKEN}', 'skills!', 'sk-#', 'task-runner-tool!', 'risk-level-high$x', 'https://api.example:8080/v1/servers/mcp']
+  for (const word of harmless) {
+    assert.equal(textHasSecret(word), false, word)
+    assert.equal(argsHaveSecret([word]), false, word)
+  }
 })

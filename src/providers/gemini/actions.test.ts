@@ -330,3 +330,37 @@ test('B4: a failing gemini command is named with its server and outcome, never i
   assert.doesNotMatch(answer.result.message, /sk-live|--transport|--scope|@upstash/)
   assert.equal(m.exec.calls.length, 1)
 })
+
+test('an MCP move keeps the declared type: an unknown transport and httpUrl with url are refused, sse and url alone move', async () => {
+  const servers = {
+    socket: { type: 'ws', url: 'wss://x.example/mcp' },
+    both: { httpUrl: 'https://a.example/mcp', url: 'https://b.example/mcp' },
+    streamed: { type: 'sse', url: 'https://s.example/sse' },
+    plain: { url: 'https://p.example/mcp' }
+  }
+  const m = withCli(
+    (m, argv) => {
+      const settings = JSON.parse(m.fs.files[USER_SETTINGS].replace(/^\/\/.*\n/, ''))
+      settings.mcpServers[Object.keys(servers).find((candidate) => argv.includes(candidate))!] = { command: 'added' }
+      write(m, USER_SETTINGS, settings)
+    },
+    { ...files(), [SHOP_SETTINGS]: json({ mcpServers: servers }) }
+  )
+  let view = await viewOf(m.deps)
+  for (const [name, paths] of [['socket', 'transport'], ['both', 'httpUrl, url']]) {
+    assert.equal(itemOf(view, 'mcp', name, SHOP).movable, false, name)
+    const answer = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', name, SHOP).key, to: { project: null }, copy: true }, view.versions)
+    assert.equal(refused(answer.result).reason, 'not-movable', `${name}: ${answer.result.message}`)
+    assert.match(answer.result.message, new RegExp(`\\(${paths}\\)`), `${name}: ${answer.result.message}`)
+  }
+  assert.deepEqual(m.exec.calls, [], 'a refused server reached the CLI')
+  for (const name of ['streamed', 'plain']) {
+    const copied = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', name, SHOP).key, to: { project: null }, copy: true }, view.versions)
+    assert.equal(copied.result.ok, true, copied.result.message)
+    view = await viewOf(m.deps)
+  }
+  assert.deepEqual(m.exec.calls, [
+    'gemini mcp add --scope user --transport sse streamed https://s.example/sse @ -',
+    'gemini mcp add --scope user --transport http plain https://p.example/mcp @ -'
+  ])
+})
