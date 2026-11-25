@@ -33,31 +33,28 @@ setup.
 ## How it is built
 
 ```
-src/core/            Pure TypeScript, no Orca or HTTP: reads the setup into one model
-  ports.ts           FileSystem: the only way the core touches the disk
-  inventory.ts       readInventory(fs, paths) -> plugins, skills, agents, MCP, hooks
+src/core/            Agent-neutral safety: versioned JSON writes, backups, trash, path guards,
+                     CLI argv, secret redaction
+src/providers/       One folder per agent (claude, codex, gemini, copilot) behind AgentProvider;
+                     router.ts refuses anything an agent did not declare
 src/adapters/
   view.ts            The panel contract: view.get, action.run, updates.check
-  backend.ts         buildView / runAction over the core
-  node-fs.ts         FileSystem over node:fs, shared by every adapter
   http/              localhost server: serves panel/ and answers the contract as JSON
   orca/              Orca plugin worker answering the same contract
+src/cli/             The agent-config command
 panel/               The HTML panel; transport.js picks localhost, Orca or a test fixture
 ```
 
-The core never knows where it runs. Each target is an adapter around it.
+## What it reads and changes
 
-## What it reads
+| Agent | Reads | Changes |
+| --- | --- | --- |
+| Claude Code | `~/.claude` (settings, skills, agents, plugins), `~/.claude.json`, project `.claude/` and `.mcp.json` | Plugins, skills, agents, MCP servers and hooks: on/off, move, copy, remove, update |
+| Codex | `~/.codex` (`config.toml`, skills, agents, hooks), project `.codex/` and `.agents/` | MCP servers through `codex mcp`; skills and agent files. `config.toml` is never rewritten; plugins and hooks are read-only |
+| Gemini CLI | `~/.gemini` (`settings.json`, extensions, skills, agents), project `.gemini/` | Extensions through `gemini extensions`, MCP servers through `gemini mcp`; skills, agents and hooks are read-only |
+| Copilot CLI | `~/.copilot` (`mcp-config.json`, skills, agents, plugins, hooks), project `.github/` | MCP servers, skills and agents |
 
-| Section | Source |
-| --- | --- |
-| Plugins | `enabledPlugins` in `~/.claude/settings.json` |
-| Skills | `~/.claude/skills/*/SKILL.md` (folders without one are skipped) |
-| Agents | `~/.claude/agents/*.md` |
-| MCP servers | `mcpServers` in `~/.claude.json` (user scope) |
-| Hooks | `hooks` in `~/.claude/settings.json` |
-
-A file that exists but cannot be parsed shows as a warning; the rest still loads.
+Folders several agents read (`~/.agents/skills`, a project's `.claude/` and `.mcp.json` for the other agents) are read-only. MCP servers and skills can be copied from one agent to another. Every change backs up the file first and is refused when the file changed since it was read. A file that exists but cannot be parsed shows as a warning; the rest still loads.
 
 ## Develop
 
