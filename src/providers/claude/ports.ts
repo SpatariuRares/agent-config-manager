@@ -1,5 +1,5 @@
 // What the Claude Code provider needs beyond the shared ports: where Claude Code keeps its setup, and its CLI.
-import type { CliResult, Clock, FileSystem, Http } from '../../core/ports.ts'
+import type { CliResult, Clock, CommandRunner, FileSystem, Http } from '../../core/ports.ts'
 
 export interface ClaudePaths {
   /** Usually ~/.claude */
@@ -10,14 +10,13 @@ export interface ClaudePaths {
 
 export const claudePaths = (home: string): ClaudePaths => ({ claudeDir: `${home}/.claude`, userConfigFile: `${home}/.claude.json` })
 
-/** The official `claude` CLI, for operations Claude Code owns (plugin files, MCP servers in ~/.claude.json). */
+/**
+ * The official `claude` CLI, for the plugin operations Claude Code owns (plugin files, updates). MCP writes
+ * (`claude mcp add-json|remove`) are guarded changes run by argv through `ClaudeDeps.exec` (./mcp.ts).
+ */
 export interface PluginCli {
   /** Runs `claude plugin uninstall`; `cwd` is the project folder for a project or local install. */
   uninstall(id: string, scope: string, cwd: string | null): Promise<CliResult>
-  /** Runs `claude mcp add-json <name> <json> --scope <scope>`; `cwd` is the project folder (null: home). */
-  mcpAdd(name: string, json: string, scope: string, cwd: string | null): Promise<CliResult>
-  /** Runs `claude mcp remove <name> --scope <scope>`; `cwd` is the project folder (null: home). */
-  mcpRemove(name: string, scope: string, cwd: string | null): Promise<CliResult>
   /**
    * Runs `claude plugin update <id> --scope <scope> --json`, plus `--accept-command <sha256>` only when the user
    * confirmed that command; never `-y`. `cwd` is the project folder for a project or local install (null: home).
@@ -34,6 +33,8 @@ export interface PluginCli {
 /** Everything the Claude Code code below the provider object works with. */
 export interface ClaudeDeps {
   fs: FileSystem
+  /** Runs `claude mcp add-json|remove` inside guarded changes. */
+  exec: CommandRunner
   cli: PluginCli
   paths: ClaudePaths
   clock?: Clock

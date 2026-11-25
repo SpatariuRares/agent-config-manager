@@ -40,7 +40,7 @@
 // - Never read: ~/.gemini/.env, oauth_creds.json, google_accounts.json, history/, logs/, extension .env files.
 import type { ActionType, AgentInfo, Item, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
-import { geminiAction } from './actions.ts'
+import { geminiAction, geminiBackups } from './actions.ts'
 import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { geminiPaths } from './paths.ts'
 import { GEMINI, readSetup, type Setup } from './read.ts'
@@ -102,6 +102,7 @@ export function geminiProvider(): AgentProvider {
     },
     buildView: async (deps) => withSwitches(await readSetup(deps.fs, geminiPaths(deps.home))),
     runAction: (deps, request) => geminiAction(deps, geminiPaths(deps.home), request),
+    backups: (deps) => geminiBackups(deps, geminiPaths(deps.home)),
     exportItem: (deps, key) => exportGemini(deps, geminiPaths(deps.home), key),
     importItem: (deps, item, to, versions) => importGemini(deps, geminiPaths(deps.home), item, to, versions)
   }

@@ -1,24 +1,23 @@
 // Codex writes. config.toml is never written by this app: MCP changes go through `codex mcp add/remove`
-// (format-preserving toml_edit inside Codex), after a backup of config.toml. Skill folders and agent files are
-// moved, copied and trashed through the core toolkit.
+// (format-preserving toml_edit inside Codex) as guarded changes (version check, backup of config.toml, the CLI,
+// then a re-read that proves the server is there or gone). Skill folders and agent files are moved, copied and
+// trashed through the core toolkit. Restore and snapshot are the router's, from codexBackupPlan.
 import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
 import {
   admitMcp,
-  backUp,
   backupTarget,
-  CHANGED,
-  redactCommand,
+  guardedChange,
   isObject,
-  isTrashName,
   itemKey,
   listBackups,
   moveEntry,
   optionLikeRefusal,
-  restoreTrash,
   tilde,
   trashEntry,
-  versionOf,
+  versionRefusal,
+  type BackupPlan,
   type EntryPlaces,
+  type FileSystem,
   type ProviderDeps
 } from '../toolkit.ts'
 import { parse } from 'smol-toml'
@@ -30,7 +29,7 @@ import type { Admitted, Json } from '../toolkit.ts'
 const CLI_TIMEOUT_MS = 60_000
 
 const GONE: ActionResult = { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
-const refuse = (reason: string, message: string): ActionResult => ({ ok: false, reason, message })
+const refuse = (reason: string, message: string): ActionResult & { ok: false } => ({ ok: false, reason, message })
 const clockOf = (deps: ProviderDeps) => deps.clock ?? (() => new Date())
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
@@ -49,19 +48,28 @@ export async function codexAction(deps: ProviderDeps, request: ActionRequest): P
       if (ref === undefined) return GONE
       return ref.kind === 'mcp' ? removeServer(deps, ref, versions) : trashFile(deps, ref, versions)
     }
-    case 'restore':
-      return restore(deps, read, action.name)
-    case 'snapshot':
-      return snapshot(deps)
     default:
       return refuse('unsupported', `Codex cannot do "${action.type}" here.`)
   }
 }
 
-/** The view's version of `file` still matches the disk. */
-async function fresh(deps: ProviderDeps, file: string, versions: Record<string, string>): Promise<{ text: string | null } | null> {
-  const text = await deps.fs.readText(file)
-  return versionOf(text) === (versions[file] ?? '') ? { text } : null
+/**
+ * What restore and snapshot work with (the router runs them). config.toml and hooks.json are backed up but never
+ * written back: Codex owns them, so a restore answers with the `cp` to run by hand. Trashed skills and agents go
+ * back to Codex's own folders, globally and in the projects it knows.
+ */
+export async function codexBackupPlan(deps: ProviderDeps): Promise<BackupPlan> {
+  const paths = codexPaths(deps.home)
+  const projects = (await readCodex(deps)).view.projects
+  const owned = (file: string) => ({ file, reason: 'read-only', why: 'this app never writes' })
+  return {
+    owner: 'Codex',
+    store: codexBackups(paths),
+    files: [],
+    owned: [owned(paths.config), owned(paths.hooks)],
+    entryFolders: [null, ...projects].flatMap((project) => [...skillDirs(paths, project), agentDir(paths, project)]),
+    say: (path) => tilde(deps.home, path)
+  }
 }
 
 export function places(deps: ProviderDeps, read: CodexRead): EntryPlaces {
@@ -72,7 +80,8 @@ export function places(deps: ProviderDeps, read: CodexRead): EntryPlaces {
 async function moveFile(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind: 'skills' | 'agents' }, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
   if (!ref.movable) return refuse('not-movable', ref.reason ?? `"${ref.entry.name}" cannot be moved.`)
   if (ref.project === null && action.to.project === null) return refuse('same-place', `"${ref.entry.name}" is already global.`)
-  if ((await fresh(deps, ref.file, versions)) === null) return CHANGED
+  const stale = await versionRefusal(changeDeps(deps), [ref.file], versions)
+  if (stale !== null) return stale
   const moved = await moveEntry(deps.fs, places(deps, read), ref.entry, action.to.project, action.copy)
   if (!moved.ok) return refuse(moved.reason, moved.message)
   const key = itemKey(ref.kind, moved.path)
@@ -88,15 +97,16 @@ async function moveFile(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind: 
 
 async function trashFile(deps: ProviderDeps, ref: Ref & { kind: 'skills' | 'agents' }, versions: Record<string, string>): Promise<ActionResult> {
   if (!ref.removable) return refuse('not-removable', ref.reason ?? `"${ref.entry.name}" cannot be removed.`)
-  if ((await fresh(deps, ref.file, versions)) === null) return CHANGED
+  const stale = await versionRefusal(changeDeps(deps), [ref.file], versions)
+  if (stale !== null) return stale
   const trashed = await trashEntry(deps.fs, codexBackups(codexPaths(deps.home)), ref.entry.entry, clockOf(deps))
   if (!trashed.ok) return refuse(trashed.reason, trashed.message)
   return { ok: true, message: `Removed "${ref.entry.name}"; it is in the backups as ${trashed.name}.`, undo: { type: 'restore', name: trashed.name } }
 }
 
 /** Whether `name` is under [mcp_servers] in the user config right now. */
-async function serverPresent(deps: ProviderDeps, name: string): Promise<boolean> {
-  const text = await deps.fs.readText(codexPaths(deps.home).config)
+async function hasServer(fs: FileSystem, file: string, name: string): Promise<boolean> {
+  const text = await fs.readText(file)
   if (text === null) return false
   try {
     const servers = (parse(text) as Record<string, unknown>).mcp_servers
@@ -106,35 +116,49 @@ async function serverPresent(deps: ProviderDeps, name: string): Promise<boolean>
   }
 }
 
-/** Version check, `codex` on PATH, backup of config.toml, then the CLI. Never writes config.toml itself. */
-async function runMcpCli(deps: ProviderDeps, argv: string[], versions: Record<string, string>): Promise<{ ok: true; backup: string | null; output: string } | ActionResult> {
-  const paths = codexPaths(deps.home)
-  const current = await fresh(deps, paths.config, versions)
-  if (current === null) return CHANGED
+const changeDeps = (deps: ProviderDeps) => ({
+  fs: deps.fs,
+  exec: deps.exec,
+  store: codexBackups(codexPaths(deps.home)),
+  clock: clockOf(deps),
+  say: (path: string) => tilde(deps.home, path)
+})
+
+/**
+ * `codex <argv>` as a guarded change of config.toml: version check, `codex` on PATH, backup, the CLI, then the
+ * re-read that proves `name` is there (`present`) or gone. Never writes config.toml itself.
+ */
+async function runMcpChange(deps: ProviderDeps, argv: string[], name: string, present: boolean, versions: Record<string, string>) {
+  const { config } = codexPaths(deps.home)
+  const stale = await versionRefusal(changeDeps(deps), [config], versions)
+  if (stale !== null) return stale
   if ((await deps.exec.find('codex')) === null) return refuse('missing-cli', 'The codex command was not found on PATH, so nothing was changed.')
-  const backup = current.text === null ? null : await backUp(deps.fs, codexBackups(paths), paths.config, current.text, clockOf(deps))
-  const result = await deps.exec.run('codex', argv, null, { timeoutMs: CLI_TIMEOUT_MS })
-  if (!result.ok) {
-    const saved = backup === null ? '' : ` ~/.codex/config.toml was backed up first as ${baseName(backup)}.`
-    // Only the subcommand is named: argv values never go into a message, and the output is redacted too.
-    return refuse('cli-failed', `codex ${argv.slice(0, 2).join(' ')} failed: ${redactCommand(result.output.trim()) || 'no output'}.${saved}`)
-  }
-  return { ok: true, backup, output: result.output }
+  return guardedChange(changeDeps(deps), {
+    files: [config],
+    versions,
+    steps: [
+      {
+        effect: { kind: 'cli', command: 'codex', argv, cwd: null, options: { timeoutMs: CLI_TIMEOUT_MS } },
+        about: name,
+        check: { file: config, holds: async (fs) => (await hasServer(fs, config, name)) === present }
+      }
+    ]
+  })
 }
 
 async function removeServer(deps: ProviderDeps, ref: Ref & { kind: 'mcp' }, versions: Record<string, string>): Promise<ActionResult> {
   if (ref.project !== null) return refuse('not-removable', 'This app never rewrites a project .codex/config.toml; `codex mcp remove` only edits ~/.codex/config.toml.')
   const refused = optionLikeRefusal(ref.name, 'An MCP server name')
   if (refused !== null || !usableServerName(ref.name)) return refuse('not-removable', refused?.output ?? `\`codex mcp remove\` refuses the name "${ref.name}".`)
-  const ran = await runMcpCli(deps, ['mcp', 'remove', ref.name], versions)
-  if (!('backup' in ran)) return ran
-  if (await serverPresent(deps, ref.name)) return refuse('cli-failed', `codex mcp remove ran, but "${ref.name}" is still in ~/.codex/config.toml.`)
-  const saved = ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.`
+  const ran = await runMcpChange(deps, ['mcp', 'remove', ref.name], ref.name, false, versions)
+  if (!ran.ok) return ran
+  const backup = ran.backups.get(codexPaths(deps.home).config)
+  const saved = backup === undefined ? '' : ` Backup: ${baseName(backup)}.`
   const message = `Removed MCP server "${ref.name}" with codex mcp remove.${saved}`
   // The undo adds the same server back from the backup, when `codex mcp add` can say everything it had.
-  const why = ran.backup === null ? 'there was no config.toml to back up.' : addableWhy(ref.name, ref.server)
+  const why = backup === undefined ? 'there was no config.toml to back up.' : addableWhy(ref.name, ref.server)
   if (why !== null) return { ok: true, message: `${message} No undo: ${why}` }
-  return { ok: true, message, undo: { type: 'move', key: itemKey('mcp', ran.backup!, ref.name), to: { project: null }, copy: true } }
+  return { ok: true, message, undo: { type: 'move', key: itemKey('mcp', backup!, ref.name), to: { project: null }, copy: true } }
 }
 
 /** Why `codex mcp add` cannot recreate this Codex server exactly (a full sentence), or null when it can. */
@@ -150,12 +174,13 @@ export async function addServer(
   versions: Record<string, string>
 ): Promise<{ ok: true; saved: string } | ActionResult> {
   const { name } = server
-  if (await serverPresent(deps, name)) return refuse('exists', `~/.codex/config.toml already has a server named "${name}".`)
+  const { config } = codexPaths(deps.home)
+  if (await hasServer(deps.fs, config, name)) return refuse('exists', `~/.codex/config.toml already has a server named "${name}".`)
   // Everything after `--` is the server's command line; codex never reads it as options.
-  const ran = await runMcpCli(deps, ['mcp', 'add', name, '--', server.command!, ...(server.args ?? [])], versions)
-  if (!('backup' in ran)) return ran
-  if (!(await serverPresent(deps, name))) return refuse('cli-failed', `codex mcp add ran, but "${name}" is not in ~/.codex/config.toml.`)
-  return { ok: true, saved: ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.` }
+  const ran = await runMcpChange(deps, ['mcp', 'add', name, '--', server.command!, ...(server.args ?? [])], name, true, versions)
+  if (!ran.ok) return ran
+  const backup = ran.backups.get(config)
+  return { ok: true, saved: backup === undefined ? '' : ` Backup: ${baseName(backup)}.` }
 }
 
 /**
@@ -214,33 +239,4 @@ async function copyServer(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind
     message: `Copied MCP server "${ref.name}" to ~/.codex/config.toml with codex mcp add.${added.saved}`,
     undo: { type: 'remove', key: itemKey('mcp', codexPaths(deps.home).config, ref.name) }
   }
-}
-
-async function restore(deps: ProviderDeps, read: CodexRead, name: string): Promise<ActionResult> {
-  const paths = codexPaths(deps.home)
-  const store = codexBackups(paths)
-  if (isTrashName(name)) {
-    const dirs = [null, ...read.view.projects].flatMap((project) => [...skillDirs(paths, project), agentDir(paths, project)])
-    const restored = await restoreTrash(deps.fs, store, name, dirs, 'Codex')
-    if (!restored.ok) return refuse(restored.reason, restored.message)
-    return { ok: true, message: `Put back ${tilde(deps.home, restored.target)}.` }
-  }
-  const target = backupTarget(store, name)
-  if (target === null) return refuse('unknown-backup', `${name} is not a known backup.`)
-  return refuse(
-    'read-only',
-    `${name} is a copy of ${tilde(deps.home, target)}, which this app never writes. ` +
-      `To put it back by hand: cp "${store.dir}/${name}" "${target}"`
-  )
-}
-
-async function snapshot(deps: ProviderDeps): Promise<ActionResult> {
-  const paths = codexPaths(deps.home)
-  const saved: string[] = []
-  for (const file of [paths.config, paths.hooks]) {
-    const text = await deps.fs.readText(file)
-    if (text !== null) saved.push(baseName(await backUp(deps.fs, codexBackups(paths), file, text, clockOf(deps))))
-  }
-  if (saved.length === 0) return refuse('missing', 'There is no ~/.codex/config.toml or hooks.json to back up.')
-  return { ok: true, message: `Backed up ${saved.join(' and ')}.` }
 }

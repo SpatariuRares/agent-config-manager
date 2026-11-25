@@ -1,7 +1,7 @@
 // 'copyToAgent' for Claude Code: MCP servers and skills out to another agent, and in from one.
 // Out: any server or skill the view shows (an export only reads). In: through the same write paths as a move.
-// - An MCP server goes through `claude mcp add-json` (./mcp.ts addMcp): ~/.claude.json is never written here, the
-//   target file is version checked and backed up first. The server is admitted against CLAUDE_ADD_JSON (or its
+// - An MCP server goes through `claude mcp add-json` (./mcp.ts addMcp) as a guarded change: ~/.claude.json is never
+//   written here, the target file is version checked and backed up first, and read again after. The server is admitted against CLAUDE_ADD_JSON (or its
 //   team twin for a project .mcp.json) by the MCP server policy (../mcp-policy.ts), as a move is.
 // - A skill folder is copied into ~/.claude/skills or <project>/.claude/skills with the toolkit's moveEntry.
 import type { ActionResult, Target } from '../../adapters/view.ts'
@@ -25,7 +25,7 @@ export async function exportClaude(deps: ClaudeDeps, key: string): Promise<Expor
 }
 
 export async function importClaude(deps: ClaudeDeps, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult> {
-  const { fs, cli, paths } = deps
+  const { fs, paths } = deps
   const project = to.project
   if (project !== null && !(await knownProjects(fs, paths)).includes(project)) {
     return { ok: false, reason: 'unknown-project', message: `${project} is not a project Claude Code knows.` }
@@ -41,12 +41,9 @@ export async function importClaude(deps: ClaudeDeps, item: Portable, to: Target,
   const place: Place = { project, scope: project === null ? 'user' : to.scope === 'project' ? 'project' : 'local' }
   const admitted = admitClaude(item, place)
   if (!admitted.ok) return admitted
-  const added = await addMcp(fs, cli, paths, item.name, claudeJson(admitted.server), place, versions, deps.clock ?? (() => new Date()))
+  const added = await addMcp(deps, item.name, claudeJson(admitted.server), place, versions, deps.clock ?? (() => new Date()))
   const where = project === null ? 'global' : `${project} (${place.scope === 'project' ? 'team' : 'only me'})`
-  if (!added.ok) {
-    const message = added.reason === 'cli-failed' ? `Could not add MCP server "${item.name}" to ${where}: ${added.message.trim()}` : added.message
-    return { ok: false, reason: added.reason, message }
-  }
+  if (!added.ok) return { ok: false, reason: added.reason, message: added.message }
   return {
     ok: true,
     message: `Copied MCP server "${item.name}" to ${where} with claude mcp add-json. ${NOTE}`,

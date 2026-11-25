@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readInventory, versionOf as versionOfText } from './inventory.ts'
-import { listBackups, restoreBackup, setProjectPluginState, updateJsonFile } from './toggle.ts'
-import { fakeFs, paths } from './test-support.ts'
+import { listBackups as storeBackups } from '../../core/backups.ts'
+import type { ActionResult } from '../../adapters/view.ts'
+import { claudeBackups, setProjectPluginState, updateJsonFile } from './toggle.ts'
+import { fakeCli, fakeFs, paths, runAction } from './test-support.ts'
 
 const BACKUPS = '/home/.claude/backups/claude-config-manager'
 const SHOP_SHARED = '/work/shop/.claude/settings.json'
 const SHOP_LOCAL = '/work/shop/.claude/settings.local.json'
 const clock = () => new Date('2026-11-24T10:00:00.000Z')
+const listBackups = (fs: ReturnType<typeof fakeFs>, p: typeof paths) => storeBackups(fs, claudeBackups(p))
+
+/** A restore through the real router, which runs it from Claude Code's declared backups. */
+async function restore(fs: ReturnType<typeof fakeFs>, name: string, versions: Record<string, string>, at = clock): Promise<ActionResult> {
+  return (await runAction({ fs, cli: fakeCli(), paths, clock: at }, { agent: 'claude', action: { type: 'restore', name }, versions })).result
+}
 const shared = JSON.stringify({ permissions: { allow: [] }, enabledPlugins: { 'a@m': false } }, null, 2) + '\n'
 
 function setup(extra: Record<string, string> = {}) {
@@ -114,8 +122,8 @@ test('project backups are listed and restore to their own file', async () => {
   const [name] = await listBackups(fs, paths)
   assert.equal(name, `${encodeURIComponent(SHOP_SHARED)}.2026-11-24T10-00-00-000Z.json`)
   const later = () => new Date('2026-11-24T11:00:00.000Z')
-  const result = await restoreBackup(fs, paths, { name, settingsVersion: await version(fs, SHOP_SHARED) }, later)
-  assert.equal(result.ok, true)
+  const result = await restore(fs, name, { [SHOP_SHARED]: await version(fs, SHOP_SHARED) }, later)
+  assert.equal(result.ok, true, result.message)
   assert.equal(fs.files[SHOP_SHARED], shared)
 })
 
@@ -163,8 +171,8 @@ test('restore refuses a backup whose project is no longer known, and creates not
   const [name] = await listBackups(fs, paths)
   fs.files['/home/.claude.json'] = JSON.stringify({ projects: {} })
   for (const key of Object.keys(fs.files)) if (key.startsWith('/work/shop/')) delete fs.files[key]
-  const result = await restoreBackup(fs, paths, { name, settingsVersion: '' }, clock)
-  assert.equal(result.ok === false && result.reason, 'unknown-project')
+  const result = await restore(fs, name, {})
+  assert.equal(result.ok === false && result.reason, 'refused')
   assert.deepEqual(Object.keys(fs.files).filter((key) => key.startsWith('/work/')), [])
 })
 
@@ -205,14 +213,14 @@ test('restore still puts back an only-me backup, and refuses a .mcp.json of a pr
   await setProjectPluginState(fs, paths, { id: 'b@m', project: '/work/shop', scope: 'local', enabled: true, version: '' }, clock)
   const [name] = await listBackups(fs, paths)
   const later = () => new Date('2026-11-24T11:00:00.000Z')
-  const restored = await restoreBackup(fs, paths, { name, settingsVersion: await version(fs, SHOP_LOCAL) }, later)
-  assert.equal(restored.ok, true)
+  const restored = await restore(fs, name, { [SHOP_LOCAL]: await version(fs, SHOP_LOCAL) }, later)
+  assert.equal(restored.ok, true, restored.message)
   assert.equal(fs.files[SHOP_LOCAL], '{}\n')
 
   const stray = `${encodeURIComponent('/work/old/.mcp.json')}.2026-11-24T09-00-00-000Z.json`
   fs.files[`${BACKUPS}/${stray}`] = '{"mcpServers":{}}'
-  const refused = await restoreBackup(fs, paths, { name: stray, settingsVersion: versionOfText('{}') }, later)
-  assert.equal(refused.ok === false && refused.reason, 'unknown-project')
+  const refused = await restore(fs, stray, { '/work/old/.mcp.json': versionOfText('{}') }, later)
+  assert.equal(refused.ok === false && refused.reason, 'refused')
   assert.equal(fs.files['/work/old/.mcp.json'], '{}')
 })
 

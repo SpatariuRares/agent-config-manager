@@ -1,15 +1,18 @@
-// The only code that writes the Claude Code settings files. Every write backs up the previous file first
-// and refuses when the file changed since the caller read it (the shared versioned write in core).
-import * as store from '../../core/backups.ts'
+// The only code that writes the Claude Code settings files. Every write is a guarded change (../../core/guarded-change.ts):
+// it refuses a file that changed since the caller read it, backs the file up first, then writes it.
 import type { BackupStore } from '../../core/backups.ts'
-import { isObject, parseObject, versionOf, type Json } from '../../core/json.ts'
-import { CHANGED, editJsonFile, replaceJson, unreadable, type WriteResult } from '../../core/json-write.ts'
+import { guardedChange, unreadable, versionRefusal, type ChangeDeps } from '../../core/guarded-change.ts'
+import { isObject, parseObject, type Json } from '../../core/json.ts'
 import type { Clock, FileSystem } from '../../core/ports.ts'
 import { isUserSettingsFile, knownProjects, projectSettingsFile, settingsFile, type ProjectScope } from './inventory.ts'
 import type { ClaudePaths } from './ports.ts'
 
-export type { WriteResult } from '../../core/json-write.ts'
 export type { Clock } from '../../core/ports.ts'
+
+export type WriteResult =
+  /** `backup` is null when nothing needed writing. */
+  | { ok: true; backup: string | null }
+  | { ok: false; reason: string; message: string }
 
 export interface PluginToggle {
   id: string
@@ -28,18 +31,31 @@ export interface ProjectPluginChange {
   version: string
 }
 
-export interface BackupRestore {
-  name: string
-  /** The inventory's version of the file this backup belongs to. */
-  settingsVersion: string
-}
-
 /**
  * Claude Code's backups stay where this app always kept them, ~/.claude/backups/claude-config-manager, so every
  * backup made before the multi-agent change is still listed and restorable. `settings` names the user settings file.
  */
 export const backupDir = (paths: ClaudePaths) => `${paths.claudeDir}/backups/claude-config-manager`
 export const claudeBackups = (paths: ClaudePaths): BackupStore => ({ dir: backupDir(paths), aliases: { settings: settingsFile(paths) } })
+
+/** The guarded change deps for Claude Code's files (JSON edits only: no CLI runs from here). */
+const changeDeps = (fs: FileSystem, paths: ClaudePaths, clock: Clock): ChangeDeps => ({ fs, store: claudeBackups(paths), clock })
+
+/** One guarded JSON edit of `file`, as a WriteResult. */
+async function writeJson(fs: FileSystem, paths: ClaudePaths, file: string, version: string, edit: (json: Json) => string | void, clock: Clock): Promise<WriteResult> {
+  const written = await guardedChange(changeDeps(fs, paths, clock), { files: [file], versions: { [file]: version }, steps: [{ effect: { kind: 'json', file, edit } }] })
+  if (!written.ok) return { ok: false, reason: written.reason, message: written.message }
+  return { ok: true, backup: written.backups.get(file) ?? null }
+}
+
+/** The file parsed after the version check (a missing file as `missing`), or the refusal: `changed`, or `unreadable`. */
+async function readChecked(fs: FileSystem, file: string, version: string, missing: Json | null): Promise<{ ok: true; json: Json } | (WriteResult & { ok: false })> {
+  const stale = await versionRefusal({ fs }, [file], { [file]: version })
+  if (stale !== null) return stale
+  const text = await fs.readText(file)
+  const json = text === null ? missing : parseObject(text)
+  return json === null ? unreadable(file) : { ok: true, json }
+}
 
 export async function setPluginEnabled(
   fs: FileSystem,
@@ -48,19 +64,15 @@ export async function setPluginEnabled(
   clock: Clock = () => new Date()
 ): Promise<WriteResult> {
   const file = settingsFile(paths)
-  const text = await fs.readText(file)
-  if (versionOf(text) !== change.settingsVersion) return CHANGED
-  const settings = parseObject(text ?? '')
-  if (settings === null) return unreadable(file)
-  if (!Object.hasOwn(settings.enabledPlugins ?? {}, change.id)) {
+  const read = await readChecked(fs, file, change.settingsVersion, null)
+  if (!read.ok) return read
+  if (!Object.hasOwn(read.json.enabledPlugins ?? {}, change.id)) {
     return { ok: false, reason: 'unknown-plugin', message: `${change.id} is not in enabledPlugins.` }
   }
-  if (settings.enabledPlugins[change.id] === change.enabled) return { ok: true, backup: null }
-  settings.enabledPlugins[change.id] = change.enabled
-  return replaceJson(fs, claudeBackups(paths), file, text ?? '', settings, clock)
+  return writeJson(fs, paths, file, change.settingsVersion, (settings) => void (settings.enabledPlugins[change.id] = change.enabled), clock)
 }
 
-/** Sets, or with `enabled: null` removes, a plugin's value in one project's settings file. */
+/** Sets, or with `enabled: null` removes, a plugin's value in one project's settings file. A missing file is created. */
 export async function setProjectPluginState(
   fs: FileSystem,
   paths: ClaudePaths,
@@ -70,51 +82,26 @@ export async function setProjectPluginState(
   const file = projectSettingsFile(change.project, change.scope)
   const refused = await projectFileRefusal(fs, paths, change.project, file)
   if (refused !== null) return refused
-  const text = await fs.readText(file)
-  if (versionOf(text) !== change.version) return CHANGED
-  // A missing project file is created.
-  const settings = text === null ? {} : parseObject(text)
-  if (settings === null || !isObject(settings.enabledPlugins ?? {})) return unreadable(file)
-  if (!(await isKnownPlugin(fs, paths, change.id, settings))) {
+  const read = await readChecked(fs, file, change.version, {})
+  if (!read.ok) return read
+  if (!isObject(read.json.enabledPlugins ?? {})) return unreadable(file)
+  if (!(await isKnownPlugin(fs, paths, change.id, read.json))) {
     return { ok: false, reason: 'unknown-plugin', message: `${change.id} is not a plugin of this setup.` }
   }
-
-  const plugins: Json = settings.enabledPlugins ?? {}
-  if (change.enabled === null ? !Object.hasOwn(plugins, change.id) : plugins[change.id] === change.enabled) {
-    return { ok: true, backup: null }
-  }
-  if (change.enabled === null) delete plugins[change.id]
-  else plugins[change.id] = change.enabled
-  settings.enabledPlugins = plugins
-  return replaceJson(fs, claudeBackups(paths), file, text ?? '{}\n', settings, clock)
-}
-
-/** Backup file names, newest first. */
-export const listBackups = (fs: FileSystem, paths: ClaudePaths): Promise<string[]> => store.listBackups(fs, claudeBackups(paths))
-
-/** The file a backup belongs to. */
-export const backupTarget = (paths: ClaudePaths, name: string): string | null => store.backupTarget(claudeBackups(paths), name)
-
-/** Puts a backup back in place of the file it came from, after backing up that file. */
-export async function restoreBackup(
-  fs: FileSystem,
-  paths: ClaudePaths,
-  restore: BackupRestore,
-  clock: Clock = () => new Date()
-): Promise<WriteResult> {
-  const { name } = restore
-  return store.restoreFile(fs, claudeBackups(paths), { name, version: restore.settingsVersion }, clock, async (target) => {
-    if (target === paths.userConfigFile) {
-      return {
-        ok: false,
-        reason: 'claude-owned',
-        message: `Claude Code rewrites ${target} all the time, so it is never written here. To go back, quit Claude Code and copy ${backupDir(paths)}/${name} over it by hand.`
-      }
-    }
-    if (target === settingsFile(paths)) return null
-    const project = /^(.+)\/(?:\.claude\/settings(?:\.local)?\.json|\.mcp\.json)$/.exec(target)?.[1] ?? ''
-    return projectFileRefusal(fs, paths, project, target)
-  })
+  return writeJson(
+    fs,
+    paths,
+    file,
+    change.version,
+    (settings) => {
+      const plugins: Json = settings.enabledPlugins ?? {}
+      if (change.enabled === null && !Object.hasOwn(plugins, change.id)) return
+      if (change.enabled === null) delete plugins[change.id]
+      else plugins[change.id] = change.enabled
+      settings.enabledPlugins = plugins
+    },
+    clock
+  )
 }
 
 export interface JsonFileEdit {
@@ -129,8 +116,7 @@ export interface JsonFileEdit {
 
 /**
  * The general versioned write: refuses unknown projects and the user settings file through a project path,
- * refuses a file that changed since it was read, backs it up, then writes 2-space JSON with a trailing newline.
- * A missing file is created.
+ * then one guarded JSON edit (version check, backup, 2-space JSON with a trailing newline). A missing file is created.
  */
 export async function updateJsonFile(
   fs: FileSystem,
@@ -138,19 +124,16 @@ export async function updateJsonFile(
   change: JsonFileEdit,
   clock: Clock = () => new Date()
 ): Promise<WriteResult> {
-  const { file } = change
-  if (change.project === null && file !== settingsFile(paths)) {
-    return { ok: false, reason: 'unknown-project', message: `${file} is not the user settings file.` }
-  }
-  if (change.project !== null) {
-    const refused = await projectFileRefusal(fs, paths, change.project, file)
-    if (refused !== null) return refused
-  }
-  return editJsonFile(fs, claudeBackups(paths), change, clock)
+  const refused = await writeRefusal(fs, paths, change.project, change.file)
+  if (refused !== null) return refused
+  return writeJson(fs, paths, change.file, change.version, change.edit, clock)
 }
 
-export const backUp = (fs: FileSystem, paths: ClaudePaths, file: string, text: string, clock: Clock): Promise<string> =>
-  store.backUp(fs, claudeBackups(paths), file, text, clock)
+/** Why this app must not write `file` as a file of `project` (null: the user settings file), or null when it may. */
+export async function writeRefusal(fs: FileSystem, paths: ClaudePaths, project: string | null, file: string): Promise<WriteResult & { ok: false } | null> {
+  if (project === null) return file === settingsFile(paths) ? null : { ok: false, reason: 'unknown-project', message: `${file} is not the user settings file.` }
+  return projectFileRefusal(fs, paths, project, file)
+}
 
 /** Project writes only go to a project Claude Code still lists, and never to the user settings file. */
 async function projectFileRefusal(fs: FileSystem, paths: ClaudePaths, project: string, file: string): Promise<WriteResult & { ok: false } | null> {

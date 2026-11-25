@@ -9,7 +9,7 @@ src/providers/copilot/
   index.ts        info(), what it supports and why, sources of every fact
   paths.ts        where each class lives; which places belong to this agent
   read.ts         buildView(): files -> Items
-  write.ts        runAction(): the writes it supports
+  write.ts        runAction(): the writes it supports; backups(): what restore works with
   copilot.test.ts providerContract(...) plus one test per rule
 ```
 
@@ -33,6 +33,7 @@ export interface AgentProvider {
   info(deps: ProviderDeps): Promise<AgentInfo>
   buildView(deps: ProviderDeps): Promise<ProviderView>
   runAction(deps: ProviderDeps, request: ActionRequest): Promise<ActionResult>
+  backups?(deps: ProviderDeps): Promise<BackupPlan>
   checkUpdates?(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer>
   exportItem?(deps: ProviderDeps, key: string): Promise<Exported>
   importItem?(deps: ProviderDeps, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult>
@@ -51,18 +52,19 @@ export interface AgentProvider {
 
 **`buildView()`** returns items, the projects the agent knows, the version of every file it read (`versions`), backups and `problems`. Build keys with `itemKey(kind, ...)`: the router reads the class from the key. Never put secrets in an item (env values, headers, tokens in args or URLs): redact them with the toolkit's `redactArgs`, `redactUrl` and `redactCommand`, and never build a key from a secret.
 
-**`runAction()`** implements what `supports` declares. Use the toolkit (`src/providers/toolkit.ts`) rather than writing files by hand:
+**`runAction()`** implements what `supports` declares, except `restore` and `snapshot`: the router runs those for every agent from `backups()`. Use the toolkit (`src/providers/toolkit.ts`) rather than writing files or running the CLI by hand:
 
 | Need | Use |
 | --- | --- |
-| Change a JSON file safely (version check, backup first, 2-space format kept) | `editJsonFile` |
-| Back up and restore files | `BackupStore` at `appBackupDir(home, '<id>')` |
-| Move, copy or trash a skill folder or agent file | `moveEntry`, `trashEntry`, `restoreTrash` |
+| Change files safely: version check of every file touched, backup first, then a JSON edit (2-space format kept) or the agent's CLI by argv, then a re-read that proves the change is there; one wording per refusal (`changed`, `cli-failed`, `did-not-change`, `partial`) | `guardedChange` (`src/core/guarded-change.ts`), and `restoreOf` for the undo |
+| Refuse a stale view before an effect that is no file edit (moving a skill folder) | `versionRefusal` |
+| Restore, snapshot and put back from the trash | declare a `BackupPlan` in `backups()`: your `BackupStore` (at `appBackupDir(home, '<id>')`), the files this app writes for the agent, and its entry folders (`src/providers/backup-actions.ts`) |
+| Move, copy or trash a skill folder or agent file | `moveEntry`, `trashEntry` |
 | Read `SKILL.md` and agent `.md` files | `readSkills`, `readAgents(fs, dir, '.agent.md')` |
 | Refuse user values that look like CLI options | `optionLikeRefusal` |
 | Decide whether an MCP server may go to a destination, and describe it safely | `admitMcp`, `describeMcp`, with destinations built by `commandLine`, `teamFile` and `privateFile` |
 | `copyToAgent`: build a Portable, copy a skill | `portableMcp`, `exportSkill`, `mcpJson`, `skillEntry` |
-| Run the agent's CLI | `deps.exec.run(binary, argv, cwd)`: argv only, never a shell |
+| Run the agent's CLI | a `cli` effect of `guardedChange` when it changes files; `deps.exec.run(binary, argv, cwd)` only for reads: argv only, never a shell |
 
 **`exportItem()` and `importItem()`** implement `copyToAgent` (copy an item to another agent), when `exports` and `imports` list a class. The router checks everything shared before either runs: both agents are detected, the source exports the class, the target imports it, and a project target uses one of the target's `projectScopes`. The answer's view is the source agent's, the message is prefixed with the target agent's name, and an `undo` from `importItem` is sent back with `undoAgent` set to the target, so the panel sends it there.
 
@@ -72,7 +74,7 @@ export interface AgentProvider {
 Rules every provider follows:
 
 1. Prefer the agent's own CLI when it exists; it knows its format better than we do.
-2. Back up every file a write (or the CLI) will change, before the change, and refuse when the file changed since the view was read (`CHANGED`).
+2. Every write and every CLI run that changes files is one `guardedChange`: it backs up every file the change touches before the change, refuses when a file changed since the view was read, and, with a post-condition, reads the files again so a CLI that exits 0 and does nothing is reported as `did-not-change`.
 3. Never rewrite a format you cannot preserve (TOML, JSON with comments): use the CLI, or leave it read-only and say so in `note`.
 4. Never write places other agents also read, unless that is the point of the action and the user can see it.
 5. Anything you could not verify stays read-only.

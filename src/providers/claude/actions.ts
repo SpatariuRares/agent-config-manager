@@ -1,20 +1,21 @@
 // Claude Code's view and actions, behind the Claude provider (./index.ts). Composes the Claude modules here
 // with the shared core; the router (../router.ts) has already checked the agent and that the action is supported.
 import { createHash } from 'node:crypto'
+import { listAllBackups, trashEntry } from '../../core/backups.ts'
+import { restoreOf } from '../../core/guarded-change.ts'
 import { isObject } from '../../core/json.ts'
 import { redactCommand } from '../../core/redact.ts'
 import type { Clock } from '../../core/ports.ts'
 import type { Action, ActionRequest, ActionResult, Item, Kind, Target } from '../../adapters/view.ts'
 import type { ProviderView } from '../types.ts'
-import { isTrashName, listAllBackups, restoreTrash, snapshot, trashEntry } from './backups.ts'
 import { moveEntry } from './entries.ts'
 import { moveHook, removeHook, type HookRef } from './hooks.ts'
 import { effectiveState, projectSettingsFile, settingsFile, type ProjectScope } from './inventory.ts'
-import { moveMcp, removeMcp, replaceMcp, type McpRef } from './mcp.ts'
+import { mcpPlaceFile, moveMcp, removeMcp, replaceMcp, type McpRef } from './mcp.ts'
 import { movePlugin } from './plugin-move.ts'
 import type { ClaudeDeps, ClaudePaths } from './ports.ts'
 import { placeFile, readSetup, type Entry, type Place, type ScopedHook, type ScopedMcp, type Setup } from './setup.ts'
-import { backupDir, backupTarget, restoreBackup, setPluginEnabled, setProjectPluginState } from './toggle.ts'
+import { claudeBackups, setPluginEnabled, setProjectPluginState } from './toggle.ts'
 import { uninstallPlugin } from './uninstall.ts'
 import { updatePlugin, updateSkill } from './update-run.ts'
 import {
@@ -76,7 +77,7 @@ export async function claudeAction(deps: ClaudeDeps, request: ActionRequest): Pr
   return outcome.result
 }
 
-const NOTE = 'Changes apply to new Claude Code sessions, or after /reload-plugins.'
+export const NOTE = 'Changes apply to new Claude Code sessions, or after /reload-plugins.'
 const NOUN: Record<Kind, string> = { plugins: 'plugin', skills: 'skill', agents: 'agent', mcp: 'MCP server', hooks: 'hook' }
 
 interface Outcome {
@@ -89,35 +90,13 @@ const refuse = (reason: string, message: string): Outcome => ({ result: { ok: fa
 const done = (message: string, undo?: Action, note = true): Outcome => ({
   result: { ok: true, message: note ? `${message} ${NOTE}` : message, ...(undo ? { undo } : {}) }
 })
-const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
-const restoreOf = (backup: string | null | undefined): Action | undefined =>
-  backup ? { type: 'restore', name: fileName(backup) } : undefined
 
 async function perform(deps: ClaudeDeps, request: ActionRequest): Promise<Outcome> {
   const { fs, cli, paths } = deps
   const clock = deps.clock ?? (() => new Date())
   const action = isObject(request) && isObject(request.action) ? (request.action as Action) : null
   const versions: Record<string, string> = isObject(request) && isObject(request.versions) ? request.versions : {}
-  const label = labels(paths)
   if (action === null || typeof action.type !== 'string') return refuse('unsupported', 'That request is not an action.')
-
-  if (action.type === 'snapshot') {
-    const backups = await snapshot(fs, paths, clock)
-    return done(`Backed up ${backups.length} settings files to ${label.path(backupDir(paths))}.`, undefined, false)
-  }
-  if (action.type === 'restore') {
-    if (typeof action.name !== 'string') return refuse('unknown-backup', 'That backup has no name.')
-    if (isTrashName(action.name)) {
-      const restored = await restoreTrash(fs, paths, action.name)
-      if (!restored.ok) return refuse(restored.reason, restored.message)
-      const kind = restored.target.slice(0, restored.target.lastIndexOf('/')).endsWith('/skills') ? 'skills' : 'agents'
-      return done(`Put back ${label.path(restored.target)}.`, { type: 'remove', key: entryKey(kind, restored.target) })
-    }
-    const target = backupTarget(paths, action.name) ?? ''
-    const restored = await restoreBackup(fs, paths, { name: action.name, settingsVersion: versions[target] ?? '' }, clock)
-    if (!restored.ok) return refuse(restored.reason, restored.message)
-    return done(`Restored ${label.path(target)} from its backup.`, restoreOf(restored.backup))
-  }
 
   if (action.type === 'refreshMarketplaces') {
     const refreshed = await cli.marketplaceUpdate()
@@ -134,7 +113,7 @@ async function perform(deps: ClaudeDeps, request: ActionRequest): Promise<Outcom
     return refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
   }
   const named = `${NOUN[item.kind]} "${item.name}"`
-  const from = label.place(item.kind, item.project, item.scope)
+  const from = labels(paths).place(item.kind, item.project, item.scope)
 
   switch (action.type) {
     case 'setEnabled': {
@@ -171,20 +150,18 @@ async function perform(deps: ClaudeDeps, request: ActionRequest): Promise<Outcom
       }
       if (action.type === 'clearOverride') return refuse('unsupported', 'Only a plugin override can be cleared.')
       if (ref.kind === 'entry') {
-        const trashed = await trashEntry(fs, paths, ref.entry.entry, clock)
+        const trashed = await trashEntry(fs, claudeBackups(paths), ref.entry.entry, clock)
         if (!trashed.ok) return refuse(trashed.reason, trashed.message)
         return done(`Removed ${named} from ${from}. It is in the backups list if you need it back.`, { type: 'restore', name: trashed.name })
       }
       if (ref.kind === 'mcp') {
-        const removed = await removeMcp(fs, cli, paths, mcpRef(ref.server), versions, clock)
+        const removed = await removeMcp(deps, mcpRef(ref.server), versions, clock)
         if (!removed.ok) return refuse(removed.reason, removed.message)
-        // A backup of ~/.claude.json is not restored here (Claude Code owns that file), so it is no undo.
-        const undo = removed.backups.find((backup) => backupTarget(paths, fileName(backup)) !== paths.userConfigFile)
-        return done(`Removed ${named} from ${from}.`, restoreOf(undo))
+        return done(`Removed ${named} from ${from}.`, mcpUndo(paths, removed, ref.server))
       }
       const removed = await removeHook(fs, paths, hookRef(ref.hook), versions, clock)
       if (!removed.ok) return refuse(removed.reason, removed.message)
-      return done(`Removed ${named} from ${from}.`, restoreOf(removed.backups[0]))
+      return done(`Removed ${named} from ${from}.`, removed.restore(ref.hook.file))
     }
 
     case 'uninstall': {
@@ -214,7 +191,7 @@ async function move(
   action: Extract<Action, { type: 'move' }>,
   versions: Record<string, string>
 ): Promise<Outcome> {
-  const { fs, cli, paths } = deps
+  const { fs, paths } = deps
   const label = labels(paths)
   const target: Target = isObject(action.to) ? action.to : { project: null }
   if (target.project !== null && (typeof target.project !== 'string' || !before.view.projects.includes(target.project))) {
@@ -238,12 +215,8 @@ async function move(
   }
 
   if (ref.kind === 'mcp') {
-    const moved = await moveMcp(fs, cli, paths, mcpRef(ref.server), to, versions, copy, clock)
+    const moved = await moveMcp(deps, mcpRef(ref.server), to, versions, copy, clock)
     if (moved.ok) return done(message, undoFor(mcpKey(to.project, to.scope, ref.server.name)))
-    if (moved.reason === 'partial') {
-      return refuse('partial', `Added ${named} to ${toLabel}, but removing it from ${fromLabel} failed: ${moved.message.trim()}`)
-    }
-    if (moved.reason === 'cli-failed') return refuse('cli-failed', `Could not add ${named} to ${toLabel}: ${moved.message.trim()}`)
     return refuse(moved.reason, moved.message)
   }
 
@@ -252,9 +225,6 @@ async function move(
     const file = placeFile(paths, to)
     const moved = await moveHook(fs, paths, hookRef(hook), { project: to.project, file }, versions, copy, clock)
     if (moved.ok) return done(message, undoFor(hookKey(file, hook.event, hook.rawMatcher, hook.command, 0)))
-    if (moved.partial) {
-      return refuse('partial', `Added ${named} to ${toLabel}, but removing it from ${fromLabel} failed: ${moved.message}`)
-    }
     return refuse(moved.reason, moved.message)
   }
 
@@ -362,19 +332,10 @@ async function update(
     return done(`${cap(named)} is already at the latest version (${target.version}).`, undefined, false)
   }
   const server = ref.server
-  const replaced = await replaceMcp(fs, cli, paths, mcpRef(server), withPinnedVersion(server.config, latest.version), versions, clock)
+  const replaced = await replaceMcp(deps, mcpRef(server), withPinnedVersion(server.config, latest.version), versions, clock)
   const from = labels(paths).place(item.kind, item.project, item.scope)
-  const pinned = `${target.pkg}@${latest.version}`
-  if (!replaced.ok) {
-    if (replaced.reason === 'partial') {
-      const backup = replaced.backups[0] ? ` Its previous config is in the backup ${labels(paths).path(replaced.backups[0])}.` : ''
-      return refuse('partial', `Removed ${named} from ${from}, but adding it back with ${pinned} failed: ${replaced.message.trim()}.${backup}`)
-    }
-    if (replaced.reason === 'cli-failed') return refuse('cli-failed', `Could not update ${named}: removing it failed, so nothing changed: ${replaced.message.trim()}`)
-    return refuse(replaced.reason, replaced.message)
-  }
-  const undo = replaced.backups.find((backup) => backupTarget(paths, fileName(backup)) !== paths.userConfigFile)
-  return done(`Updated ${named} from ${target.pkg}@${target.version} to ${latest.version} in ${from}.`, restoreOf(undo))
+  if (!replaced.ok) return refuse(replaced.reason, replaced.message)
+  return done(`Updated ${named} from ${target.pkg}@${target.version} to ${latest.version} in ${from}.`, mcpUndo(paths, replaced, server))
 }
 
 /** Updates each key in turn and reports every outcome. A key that needs a command approved is skipped. */
@@ -447,6 +408,12 @@ function hiddenWarning(paths: ClaudePaths, setup: Setup, check: NonNullable<Outc
   const state = effectiveState(plugin, check.project)
   if (state.from !== 'local' || state.enabled === check.enabled) return null
   return `Your only-me file ${labels(paths).path(projectSettingsFile(check.project, 'local'))} sets plugin "${plugin.name}" ${state.enabled ? 'on' : 'off'}, and it wins there, so this team change does not apply to you.`
+}
+
+/** The restore of an MCP change's backup, unless it is of ~/.claude.json, which Claude Code owns (no undo then). */
+function mcpUndo(paths: ClaudePaths, result: { restore: (file: string) => Action | undefined }, place: Place): Action | undefined {
+  const file = mcpPlaceFile(paths, place)
+  return file === paths.userConfigFile ? undefined : result.restore(file)
 }
 
 const mcpRef = (server: ScopedMcp): McpRef => ({ name: server.name, project: server.project, scope: server.scope, config: server.config })
@@ -609,7 +576,7 @@ export async function read(deps: ClaudeDeps): Promise<Read> {
     )
   }
 
-  const backups = (await listAllBackups(fs, paths)).map(({ name, target, at }) => ({ name, target, at }))
+  const backups = (await listAllBackups(fs, claudeBackups(paths))).map(({ name, target, at }) => ({ name, target, at }))
   const view: ProviderView = {
     items: items.sort(byPlace),
     projects: setup.inventory.projects,

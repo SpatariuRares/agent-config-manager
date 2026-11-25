@@ -2,38 +2,13 @@
 // In a provider's test file: `providerContract(myProvider, { home, files, write })`.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fakeFs } from '../core/test-support.ts'
-import type { CliResult, CommandRunner } from '../core/ports.ts'
+import { fakeExec, fakeFs } from '../core/test-support.ts'
 import type { Action, ActionResult, ActionType, AgentInfo, Kind, View } from '../adapters/view.ts'
 import { admitMcp } from './mcp-policy.ts'
 import { routeAction, routeView } from './router.ts'
 import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, PORTABLE_KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
 
-export { fakeFs }
-
-type Reply = (command: string, argv: readonly string[], cwd: string | null) => CliResult | Promise<CliResult>
-
-/**
- * A CommandRunner that runs nothing. `find` knows only `commands` (name -> path). Every run is recorded in
- * `calls` as `<command> <argv...> @ <cwd or ->`; it answers with `reply`, else success for a known command
- * and "not found" for any other.
- */
-export function fakeExec(options: { commands?: Record<string, string>; reply?: Reply } = {}): CommandRunner & { calls: string[] } {
-  const commands = options.commands ?? {}
-  const calls: string[] = []
-  const known = (name: string) => name.startsWith('/') || Object.hasOwn(commands, name)
-  return {
-    calls,
-    async find(name) {
-      return Object.hasOwn(commands, name) ? commands[name] : null
-    },
-    async run(command, argv, cwd) {
-      calls.push(`${[command, ...argv].join(' ')} @ ${cwd ?? '-'}`)
-      if (options.reply) return options.reply(command, argv, cwd)
-      return known(command) ? { ok: true, output: '' } : { ok: false, output: `The ${command} command was not found.` }
-    }
-  }
-}
+export { fakeExec, fakeFs }
 
 export interface ContractFixture {
   /** The fake home folder; the provider finds its config under it. */
@@ -112,6 +87,7 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
       id: provider.id,
       info: (deps) => provider.info(deps),
       buildView: (deps) => provider.buildView(deps),
+      ...(provider.backups ? { backups: (deps: ProviderDeps) => provider.backups!(deps) } : {}),
       runAction: (deps, request) => {
         calls.push(request.action)
         return provider.runAction(deps, request)
@@ -145,6 +121,8 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
     }
     if ((info.exports ?? []).length > 0) assert.equal(typeof provider.exportItem, 'function', 'exports are listed, so exportItem must exist')
     if ((info.imports ?? []).length > 0) assert.equal(typeof provider.importItem, 'function', 'imports are listed, so importItem must exist')
+    const backs = Object.values(info.supports).some((actions) => (actions ?? []).some((action) => BACKUP_ACTIONS.includes(action)))
+    if (backs) assert.equal(typeof provider.backups, 'function', 'restore or snapshot is listed, so backups must be declared')
     assert.equal(typeof info.configHome, 'string')
     assert.ok(info.configHome !== '')
   })

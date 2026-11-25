@@ -18,11 +18,12 @@ import {
   shellQuote,
   skillEntry,
   admitMcp,
+  unreadable,
   type Exported,
   type Portable,
   type ProviderDeps
 } from '../toolkit.ts'
-import { addArgv, argvLimits, contextOf, done, gemini, guard, hasServer, refuse, unchanged } from './actions.ts'
+import { addArgv, argvLimits, change, contextOf, done, hasServer, mcpStep, refuse } from './actions.ts'
 import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { settingsOf, type GeminiPaths } from './paths.ts'
 import { geminiMcpConfig, readSetup } from './read.ts'
@@ -71,13 +72,9 @@ export async function importGemini(deps: ProviderDeps, paths: GeminiPaths, item:
     if (optionLike) return refuse('refused', optionLike.output)
   }
   const file = settingsOf(paths, project)
-  if (setup.places.find((p) => p.file === file)?.broken) return refuse('unreadable', `${ctx.say(file)} is not valid JSON; it was left untouched.`)
-  if (await hasServer(ctx, file, item.name)) return refuse('exists', `${place} already has an MCP server named ${item.name}. Rename or remove one of them first.`)
-  const guarded = await guard(ctx, [file])
-  if (!guarded.ok) return guarded
-  const argv = addArgv(admitted.server, project)
-  const added = await gemini(ctx, argv, item.name, project)
+  if (setup.places.find((p) => p.file === file)?.broken) return unreadable(ctx.say(file))
+  if (await hasServer(deps.fs, file, item.name)) return refuse('exists', `${place} already has an MCP server named ${item.name}. Rename or remove one of them first.`)
+  const added = await change(ctx, [file], [mcpStep(addArgv(admitted.server, project), item.name, project, file, true)])
   if (!added.ok) return added
-  if (!(await hasServer(ctx, file, item.name))) return unchanged(argv, item.name, file, added.output, ctx.say)
   return done(`Copied MCP server "${item.name}" to ${place} with gemini mcp add.`, { type: 'remove', key: itemKey('mcp', project, item.name) })
 }

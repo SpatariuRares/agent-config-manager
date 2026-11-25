@@ -4,6 +4,7 @@
 // error handling, and the fresh view after every action.
 import type { Clock, CommandRunner, FileSystem, Http } from '../core/ports.ts'
 import type { ActionRequest, ActionResult, ActionType, AgentId, AgentInfo, Kind, Target, UpdatesAnswer, View } from '../adapters/view.ts'
+import type { BackupPlan } from './backup-actions.ts'
 import type { Destination } from './mcp-policy.ts'
 
 /** What every provider gets on every call. Nothing else touches the machine. */
@@ -48,11 +49,20 @@ export interface AgentProvider {
   buildView(deps: ProviderDeps): Promise<ProviderView>
 
   /**
-   * Runs one action the router already checked against `info().supports`. Writes go through the core toolkit
-   * (./toolkit.ts): version check against `request.versions`, backup first, then the write. May throw; the router
-   * reports it as reason 'error'. The router builds the fresh view after it, so this returns only the result.
+   * Runs one action the router already checked against `info().supports`, except the backup actions (restore,
+   * snapshot), which the router runs from `backups`. Every write goes through the guarded change module
+   * (guardedChange in the toolkit): version check against `request.versions`, backup first, the write or the CLI,
+   * then the post-condition. May throw; the router reports it as reason 'error'. The router builds the fresh view
+   * after it, so this returns only the result.
    */
   runAction(deps: ProviderDeps, request: ActionRequest): Promise<ActionResult>
+
+  /**
+   * What restore and snapshot work with: the agent's backup store, the files this app writes for it, and its entry
+   * folders (./backup-actions.ts). Required when `info().supports` lists 'restore' or 'snapshot': the router runs
+   * both from it, so a provider never implements them. Reads only.
+   */
+  backups?(deps: ProviderDeps): Promise<BackupPlan>
 
   /** The on-demand update check (network). Omit it when nothing of this agent can be checked. */
   checkUpdates?(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer>

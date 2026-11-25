@@ -134,7 +134,7 @@ test('Codex import refuses a server name already in config.toml, and reports a C
   assert.equal(refused(await importInto(taken.deps, { ...STDIO, name: 'codegraph' })).reason, 'exists')
   assert.deepEqual(taken.exec.calls, [])
   const silent = machine(false)
-  assert.equal(refused(await importInto(silent.deps, STDIO)).reason, 'cli-failed')
+  assert.equal(refused(await importInto(silent.deps, STDIO)).reason, 'did-not-change')
 })
 
 test('Codex import: a skill folder is copied into ~/.codex/skills or <project>/.codex/skills, with an undo that removes it', async () => {

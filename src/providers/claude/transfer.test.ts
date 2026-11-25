@@ -2,11 +2,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ActionResult, Target } from '../../adapters/view.ts'
-import { fakeExec } from '../testing.ts'
 import type { PortableMcp, PortableSkill, ProviderDeps } from '../types.ts'
 import { entryKey, mcpKey } from './actions.ts'
 import { claudeProvider } from './index.ts'
-import { fakeCli, fakeFs, paths } from './test-support.ts'
+import { claudeExec, fakeCli, fakeFs, paths } from './test-support.ts'
 
 const SHOP = '/work/shop'
 const BACKUPS = '/home/.claude/backups/claude-config-manager'
@@ -29,7 +28,7 @@ function machine(failing: string[] = []) {
     '/src/pdf/run.sh': 'echo\n'
   })
   const cli = fakeCli(failing)
-  const deps: ProviderDeps = { fs, exec: fakeExec(), home: '/home', clock: () => new Date('2026-11-24T10:00:00.000Z') }
+  const deps: ProviderDeps = { fs, exec: claudeExec({ fs, paths, cli }), home: '/home', clock: () => new Date('2026-11-24T10:00:00.000Z') }
   return { fs, cli, deps, provider: claudeProvider({ cli, paths }) }
 }
 

@@ -42,7 +42,7 @@
 // - Plugins and hooks: read-only (see NOTE).
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
-import { codexAction } from './actions.ts'
+import { codexAction, codexBackupPlan } from './actions.ts'
 import { CODEX_ADD } from './mcp-add.ts'
 import { exportCodex, importCodex } from './transfer.ts'
 import { CODEX, codexPaths, readCodex } from './read.ts'
@@ -99,6 +99,7 @@ export function codexProvider(): AgentProvider {
     },
     buildView: async (deps) => (await readCodex(deps)).view,
     runAction: (deps, request) => codexAction(deps, request),
+    backups: (deps) => codexBackupPlan(deps),
     exportItem: (deps, key) => exportCodex(deps, key),
     importItem: (deps, item, to, versions) => importCodex(deps, item, to, versions)
   }

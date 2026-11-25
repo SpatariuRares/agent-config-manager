@@ -1,9 +1,11 @@
 // The shared part of every request: which provider answers it, whether its agent is installed, and whether
 // it declared the action. A provider is never called with an action it did not list in `info().supports`
-// ('copyToAgent': in `info().exports` for the source, `info().imports` for the target).
+// ('copyToAgent': in `info().exports` for the source, `info().imports` for the target). The backup actions
+// (restore, snapshot) run here for every provider, from its `backups` declaration (./backup-actions.ts).
 import { isObject } from '../core/json.ts'
 import type { Http } from '../core/ports.ts'
 import type { Action, ActionAnswer, ActionRequest, ActionResult, AgentInfo, AgentRequest, Kind, ProjectScope, UpdatesAnswer, ViewAnswer } from '../adapters/view.ts'
+import { runBackupAction } from './backup-actions.ts'
 import { ACTION_TYPES, BACKUP_ACTIONS, isKind, kindOfKey, type AgentProvider, type ProviderDeps } from './types.ts'
 
 export type ProviderLookup = { ok: true; provider: AgentProvider } | { ok: false; reason: 'unknown-agent'; message: string }
@@ -74,6 +76,11 @@ async function checked(deps: ProviderDeps, provider: AgentProvider, request: Act
   const refused = refusal(info, action)
   if (refused !== null) return refused
   const versions: Record<string, string> = isObject(request.versions) ? request.versions : {}
+  if (action.type === 'restore' || action.type === 'snapshot') {
+    // Backups are shared: the provider only declares its store, its files and its entry folders.
+    if (provider.backups === undefined) return { ok: false, reason: 'unsupported', message: `${info.name} declares no backups.` }
+    return runBackupAction(deps, await provider.backups(deps), action, versions)
+  }
   return provider.runAction(deps, { agent: provider.id, action, versions })
 }
 

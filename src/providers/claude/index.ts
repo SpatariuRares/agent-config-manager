@@ -2,6 +2,7 @@
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider, type ProviderDeps } from '../types.ts'
 import { CLAUDE, claudeAction, claudeView } from './actions.ts'
+import { claudeBackupPlan } from './backups.ts'
 import { claudeCliOver } from './cli.ts'
 import { CLAUDE_ADD_JSON, CLAUDE_ADD_JSON_TEAM } from './mcp.ts'
 import { claudePaths, type ClaudeDeps, type ClaudePaths, type PluginCli } from './ports.ts'
@@ -37,7 +38,7 @@ export const CLAUDE_IMPORTS: Kind[] = ['skills', 'mcp']
 export interface ClaudeOverrides {
   /** Defaults to ~/.claude and ~/.claude.json under `deps.home`. */
   paths?: ClaudePaths
-  /** Defaults to the `claude`, `npx` and `git` binaries through `deps.exec`. */
+  /** Defaults to the `claude`, `npx` and `git` binaries through `deps.exec`; MCP writes always use `deps.exec`. */
   cli?: PluginCli
 }
 
@@ -45,6 +46,7 @@ export interface ClaudeOverrides {
 export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
   const claude = (deps: ProviderDeps): ClaudeDeps => ({
     fs: deps.fs,
+    exec: deps.exec,
     cli: overrides.cli ?? claudeCliOver(deps.exec),
     paths: overrides.paths ?? claudePaths(deps.home),
     clock: deps.clock,
@@ -73,6 +75,7 @@ export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
     },
     buildView: (deps) => claudeView(claude(deps)),
     runAction: (deps, request) => claudeAction(claude(deps), request),
+    backups: (deps) => claudeBackupPlan(claude(deps)),
     checkUpdates: (deps) => checkClaudeUpdates({ ...claude(deps), http: deps.http }),
     exportItem: (deps, key) => exportClaude(claude(deps), key),
     importItem: (deps, item, to, versions) => importClaude(claude(deps), item, to, versions)

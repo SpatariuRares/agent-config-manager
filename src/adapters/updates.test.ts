@@ -375,7 +375,7 @@ test('npm MCP update: the --package= form keeps its shape; a failed re-add is re
     'mcp add-json context7 {"command":"npx","args":["-y","--package=@upstash/context7-mcp@2.3.0","--","context7-mcp"]} --scope user @ -'
   ])
   assert.equal(result.reason, 'partial')
-  assert.match(result.message, /Removed MCP server "context7".*but adding it back.*failed/s)
+  assert.match(result.message, /^claude mcp remove for context7 worked; then claude mcp add-json for context7 failed: cannot mcp-add in user\. The backups made first/)
   assert.equal(deps.fs.files[`${BACKUPS}/${encodeURIComponent('/home/.claude.json')}.${STAMP}.json`], JSON.stringify(userConfig))
 })
 

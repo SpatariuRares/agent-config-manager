@@ -1,83 +1,82 @@
-// Moves, copies and removes MCP servers. Only through the official CLI: ~/.claude.json is rewritten by
-// Claude Code all the time, so it is read here but never written. Files the CLI changes are backed up first.
-import { claudeMcpConfig, isObject, knownProjects, versionOf, type Json } from './inventory.ts'
+// Moves, copies, removes and replaces MCP servers. Only through the official CLI: ~/.claude.json is rewritten by
+// Claude Code all the time, so it is read here but never written. Each write is a guarded change: the files the CLI
+// changes are version checked and backed up first, `claude mcp add-json|remove` runs by argv, then the file is read
+// again to prove the server is there (or gone), since a CLI can exit 0 and change nothing.
+import { claudeMcpConfig, isObject, knownProjects, type Json } from './inventory.ts'
+import { optionLikeRefusal } from '../../core/cli.ts'
+import { guardedChange, type ChangeResult, type Step } from '../../core/guarded-change.ts'
 import type { FileSystem } from '../../core/ports.ts'
 import { admitMcp, commandLine, type Admitted, type Carries, type McpConfig } from '../mcp-policy.ts'
 import { mcpJson } from '../portable.ts'
-import type { ClaudePaths, PluginCli } from './ports.ts'
+import type { ClaudeDeps, ClaudePaths } from './ports.ts'
 import { mcpFile, type Place } from './setup.ts'
-import { backUp, type Clock } from './toggle.ts'
+import { claudeBackups, type Clock } from './toggle.ts'
 
 export interface McpRef extends Place {
   name: string
   config: Json
 }
 
-export type McpResult =
-  | { ok: true; backups: string[] }
-  | {
-      ok: false
-      reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'not-movable' | 'cli-failed' | 'partial'
-      message: string
-      backups: string[]
-    }
+type Own = 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'not-movable' | 'refused'
+export type McpResult = ChangeResult | { ok: false; reason: Own; message: string }
+
+const refuse = (reason: Own, message: string): McpResult => ({ ok: false, reason, message })
 
 /** The `--scope` of a place: user globally, else the project's team (.mcp.json) or only-me (~/.claude.json). */
 const cliScope = (place: Place) => (place.project === null ? 'user' : place.scope)
-const fileOf = (paths: ClaudePaths, place: Place) =>
+/** The file an MCP place lives in: a project's .mcp.json for team, else ~/.claude.json. */
+export const mcpPlaceFile = (paths: ClaudePaths, place: Place) =>
   place.project !== null && place.scope === 'project' ? mcpFile(place.project) : paths.userConfigFile
 
-export async function moveMcp(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  ref: McpRef,
-  to: Place,
-  versions: Record<string, string>,
-  copy: boolean,
-  clock: Clock
-): Promise<McpResult> {
-  const refuse = (reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'not-movable', message: string): McpResult => ({
-    ok: false,
-    reason,
-    message,
-    backups: []
-  })
+/** `claude mcp add-json <name> <json>` (`json` given) or `claude mcp remove <name>` in a place, proven by a re-read. */
+function mcpStep(paths: ClaudePaths, name: string, place: Place, json?: string): Step {
+  const argv = json === undefined ? ['mcp', 'remove', name, '--scope', cliScope(place)] : ['mcp', 'add-json', name, json, '--scope', cliScope(place)]
+  const present = json !== undefined
+  return {
+    effect: { kind: 'cli', command: 'claude', argv, cwd: place.project, options: { timeoutMs: 120_000 } },
+    about: name,
+    check: { file: mcpPlaceFile(paths, place), holds: async (fs) => Object.hasOwn(await serversAt(fs, paths, place), name) === present }
+  }
+}
+
+/**
+ * The guarded change of Claude Code's MCP files. ~/.claude.json is backed up but never version checked: Claude
+ * Code rewrites it all the time (sessions, history, caches), so the view's version of it is always stale, and only
+ * its own CLI writes it here.
+ */
+function change(deps: Pick<ClaudeDeps, 'fs' | 'exec' | 'paths'>, clock: Clock, places: Place[], versions: Record<string, string>, steps: [Step] | [Step, Step]) {
+  const { paths } = deps
+  return guardedChange(
+    { fs: deps.fs, exec: deps.exec, store: claudeBackups(paths), clock },
+    { files: [...new Set(places.map((place) => mcpPlaceFile(paths, place)))], versions, unversioned: [paths.userConfigFile], steps }
+  )
+}
+
+/** A name like `-h` would be read by the CLI as an option, so it is refused before anything runs. */
+const optionLike = (name: string): McpResult | null => {
+  const refused = optionLikeRefusal(name, 'An MCP server name', '; rename it in its config file')
+  return refused === null ? null : refuse('refused', refused.output)
+}
+
+export async function moveMcp(deps: ClaudeDeps, ref: McpRef, to: Place, versions: Record<string, string>, copy: boolean, clock: Clock): Promise<McpResult> {
+  const { fs, paths } = deps
   if (to.project === ref.project && cliScope(to) === cliScope(ref)) return refuse('same-place', `"${ref.name}" is already there.`)
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
     return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
   }
   const admitted = admitClaude(claudeMcpConfig(ref.name, ref.config), to)
   if (!admitted.ok) return refuse(admitted.reason === 'secret' ? 'secret' : 'not-movable', admitted.message)
-  const stale = await staleFile(fs, paths, [ref, to], versions)
-  if (stale !== null) return refuse('changed', `${stale} changed since it was read. Refresh and try again.`)
+  const named = optionLike(ref.name)
+  if (named !== null) return named
   if (Object.hasOwn(await serversAt(fs, paths, to), ref.name)) {
     return refuse('exists', `An MCP server named "${ref.name}" is already there. Remove or rename one of them first.`)
   }
-
-  const backups = await backUpFiles(fs, paths, copy ? [to] : [to, ref], clock)
-  const added = await cli.mcpAdd(ref.name, JSON.stringify(claudeJson(admitted.server)), cliScope(to), to.project)
-  if (!added.ok) return { ok: false, reason: 'cli-failed', message: added.output, backups }
-  if (copy) return { ok: true, backups }
-  const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
-  if (!removed.ok) return { ok: false, reason: 'partial', message: removed.output, backups }
-  return { ok: true, backups }
+  const add = mcpStep(paths, ref.name, to, JSON.stringify(claudeJson(admitted.server)))
+  return copy ? change(deps, clock, [to], versions, [add]) : change(deps, clock, [to, ref], versions, [add, mcpStep(paths, ref.name, ref)])
 }
 
-export async function removeMcp(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  ref: McpRef,
-  versions: Record<string, string>,
-  clock: Clock
-): Promise<McpResult> {
-  const stale = await staleFile(fs, paths, [ref], versions)
-  if (stale !== null) return { ok: false, reason: 'changed', message: `${stale} changed since it was read. Refresh and try again.`, backups: [] }
-  const backups = await backUpFiles(fs, paths, [ref], clock)
-  const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
-  if (!removed.ok) return { ok: false, reason: 'cli-failed', message: removed.output, backups }
-  return { ok: true, backups }
+export async function removeMcp(deps: ClaudeDeps, ref: McpRef, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  return optionLike(ref.name) ?? change(deps, clock, [ref], versions, [mcpStep(deps.paths, ref.name, ref)])
 }
 
 /**
@@ -100,47 +99,27 @@ export const admitClaude = (config: McpConfig, to: Place): Admitted =>
 export const claudeJson = (server: Extract<Admitted, { ok: true }>['server']): Json => ({ ...(mcpJson(server, 'stdio') as object), ...server.rest })
 
 /**
- * Adds a server that comes from another agent ('copyToAgent') with `claude mcp add-json` in `to`: the target file
- * is version checked and backed up first, and a name already there is refused. The caller has admitted the
- * server against admitClaude (add-json takes the whole config on its command line).
+ * Adds a server that comes from another agent ('copyToAgent') with `claude mcp add-json` in `to`, as a guarded
+ * change; a name already there is refused. The caller has admitted the server against admitClaude (add-json takes
+ * the whole config on its command line).
  */
-export async function addMcp(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  name: string,
-  config: Json,
-  to: Place,
-  versions: Record<string, string>,
-  clock: Clock
-): Promise<McpResult> {
+export async function addMcp(deps: ClaudeDeps, name: string, config: Json, to: Place, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  const { fs, paths } = deps
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
-    return { ok: false, reason: 'unknown-project', message: `${to.project} is not a project Claude Code knows.`, backups: [] }
+    return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
   }
-  const stale = await staleFile(fs, paths, [to], versions)
-  if (stale !== null) return { ok: false, reason: 'changed', message: `${stale} changed since it was read. Refresh and try again.`, backups: [] }
+  const named = optionLike(name)
+  if (named !== null) return named
   if (Object.hasOwn(await serversAt(fs, paths, to), name)) {
-    return { ok: false, reason: 'exists', message: `An MCP server named "${name}" is already there. Remove or rename one of them first.`, backups: [] }
+    return refuse('exists', `An MCP server named "${name}" is already there. Remove or rename one of them first.`)
   }
-  const backups = await backUpFiles(fs, paths, [to], clock)
-  const added = await cli.mcpAdd(name, JSON.stringify(config), cliScope(to), to.project)
-  if (!added.ok) return { ok: false, reason: 'cli-failed', message: added.output, backups }
-  return { ok: true, backups }
-}
-
-/** The first .mcp.json that changed since the view; ~/.claude.json is not checked (Claude Code rewrites it). */
-async function staleFile(fs: FileSystem, paths: ClaudePaths, places: Place[], versions: Record<string, string>) {
-  for (const place of places) {
-    const file = fileOf(paths, place)
-    if (file !== paths.userConfigFile && versionOf(await fs.readText(file)) !== (versions[file] ?? '')) return file
-  }
-  return null
+  return change(deps, clock, [to], versions, [mcpStep(paths, name, to, JSON.stringify(config))])
 }
 
 async function serversAt(fs: FileSystem, paths: ClaudePaths, place: Place): Promise<Json> {
   let json: Json = {}
   try {
-    json = JSON.parse((await fs.readText(fileOf(paths, place))) ?? '{}')
+    json = JSON.parse((await fs.readText(mcpPlaceFile(paths, place))) ?? '{}')
   } catch {
     // Unreadable: the CLI will report it.
   }
@@ -154,35 +133,12 @@ async function serversAt(fs: FileSystem, paths: ClaudePaths, place: Place): Prom
   return isObject(map) ? map : {}
 }
 
-async function backUpFiles(fs: FileSystem, paths: ClaudePaths, places: Place[], clock: Clock): Promise<string[]> {
-  const backups: string[] = []
-  for (const file of [...new Set(places.map((place) => fileOf(paths, place)))]) {
-    const text = await fs.readText(file)
-    if (text !== null) backups.push(await backUp(fs, paths, file, text, clock))
-  }
-  return backups
-}
-
 /**
- * Replaces a server's config in its own place: backs up its file, then `claude mcp remove` and `claude mcp add-json`
- * with the new config. A failed remove changes nothing; a failed add after it is `partial` (the server is gone,
- * its old config is in the backup).
+ * Replaces a server's config in its own place: `claude mcp remove`, then `claude mcp add-json` with the new config,
+ * as one guarded change. A failed remove changes nothing; a failed add after it is `partial` (the server is gone,
+ * its old config is in the backup the message names).
  */
-export async function replaceMcp(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  ref: McpRef,
-  config: Json,
-  versions: Record<string, string>,
-  clock: Clock
-): Promise<McpResult> {
-  const stale = await staleFile(fs, paths, [ref], versions)
-  if (stale !== null) return { ok: false, reason: 'changed', message: `${stale} changed since it was read. Refresh and try again.`, backups: [] }
-  const backups = await backUpFiles(fs, paths, [ref], clock)
-  const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
-  if (!removed.ok) return { ok: false, reason: 'cli-failed', message: removed.output, backups }
-  const added = await cli.mcpAdd(ref.name, JSON.stringify(config), cliScope(ref), ref.project)
-  if (!added.ok) return { ok: false, reason: 'partial', message: added.output, backups }
-  return { ok: true, backups }
+export async function replaceMcp(deps: ClaudeDeps, ref: McpRef, config: Json, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  const { paths } = deps
+  return optionLike(ref.name) ?? change(deps, clock, [ref], versions, [mcpStep(paths, ref.name, ref), mcpStep(paths, ref.name, ref, JSON.stringify(config))])
 }

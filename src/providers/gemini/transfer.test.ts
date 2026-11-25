@@ -124,7 +124,7 @@ test('Gemini import refuses a name already there, and reports a CLI that did not
   assert.equal(refused(await importInto(taken, { ...STDIO, name: 'context7' })).reason, 'exists')
   assert.deepEqual(taken.exec.calls, [])
   const silent = withCli(files(), () => ({ ok: true, output: 'MCP server added' }))
-  assert.equal(refused(await importInto(silent, STDIO)).reason, 'cli')
+  assert.equal(refused(await importInto(silent, STDIO)).reason, 'did-not-change')
 })
 
 test('Gemini import: a skill folder is copied into ~/.gemini/skills (Gemini CLI has no remove here, so no undo)', async () => {

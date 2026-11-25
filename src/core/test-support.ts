@@ -1,6 +1,6 @@
 // Shared test doubles for the core and every provider.
 import { posix } from 'node:path'
-import type { FileSystem } from './ports.ts'
+import type { CliResult, CommandRunner, FileSystem } from './ports.ts'
 
 /**
  * An in-memory FileSystem over a flat path -> text map; directories are implied by paths.
@@ -77,6 +77,30 @@ export function fakeFs(
     },
     async copy(src, dst) {
       transfer(src, dst, true)
+    }
+  }
+}
+
+type Reply = (command: string, argv: readonly string[], cwd: string | null) => CliResult | Promise<CliResult>
+
+/**
+ * A CommandRunner that runs nothing. `find` knows only `commands` (name -> path). Every run is recorded in
+ * `calls` as `<command> <argv...> @ <cwd or ->`; it answers with `reply`, else success for a known command
+ * and "not found" for any other.
+ */
+export function fakeExec(options: { commands?: Record<string, string>; reply?: Reply } = {}): CommandRunner & { calls: string[] } {
+  const commands = options.commands ?? {}
+  const calls: string[] = []
+  const known = (name: string) => name.startsWith('/') || Object.hasOwn(commands, name)
+  return {
+    calls,
+    async find(name) {
+      return Object.hasOwn(commands, name) ? commands[name] : null
+    },
+    async run(command, argv, cwd) {
+      calls.push(`${[command, ...argv].join(' ')} @ ${cwd ?? '-'}`)
+      if (options.reply) return options.reply(command, argv, cwd)
+      return known(command) ? { ok: true, output: '' } : { ok: false, output: `The ${command} command was not found.` }
     }
   }
 }

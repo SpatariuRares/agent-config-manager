@@ -4,22 +4,24 @@ export type { CliResult, Clock, CommandRunner, FileSystem, Http, HttpResult } fr
 
 // JSON config files: never-throwing reads and the versions that let a write refuse a concurrent change.
 export { isObject, parseObject, readJson, versionOf, type Json } from '../core/json.ts'
-// The versioned write: version check, backup, then the write. Check which files the agent may write first.
-export { CHANGED, editJsonFile, replaceJson, unreadable, type JsonEdit, type WriteResult } from '../core/json-write.ts'
-// The per-agent backup store: backups before writes, a restorable trash, and the list the view shows.
+// The guarded change: every write and every CLI run that changes files goes through it (version check, backup
+// first, the effect, the post-condition, one wording per refusal). Check which files the agent may write first.
 export {
-  backUp,
-  backupTarget,
-  isTrashName,
-  listAllBackups,
-  listBackups,
-  restoreFile,
-  restoreTrash,
-  trashEntry,
-  type BackupInfo,
-  type BackupStore,
-  type TrashResult
-} from '../core/backups.ts'
+  guardedChange,
+  restoreOf,
+  unreadable,
+  versionRefusal,
+  type Change,
+  type ChangeDeps,
+  type ChangeRefusal,
+  type ChangeResult,
+  type Effect,
+  type Step
+} from '../core/guarded-change.ts'
+// The per-agent backup store: a restorable trash for removed entries, and the list the view shows. Restore and
+// snapshot are not the provider's: it declares a BackupPlan and the router runs them (./backup-actions.ts).
+export { backupTarget, isTrashName, listAllBackups, listBackups, trashEntry, type BackupInfo, type BackupStore, type TrashResult } from '../core/backups.ts'
+export type { BackupPlan, OwnedFile, RestoreRequest } from './backup-actions.ts'
 // Path guards and known projects.
 export { appBackupDir, existingProjects, occupied, sameFolder, tilde } from '../core/paths.ts'
 // SKILL.md folders and agent .md files.

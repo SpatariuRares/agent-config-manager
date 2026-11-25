@@ -245,7 +245,10 @@ test('moving a global MCP server into a project adds it there through the CLI, t
     'mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop',
     'mcp remove web --scope user @ -'
   ])
-  assert.equal(deps.fs.files['/home/.claude.json'], config)
+  // Only the CLI wrote ~/.claude.json (the double writes it as Claude Code would); the app backed it up first.
+  const written = JSON.parse(deps.fs.files['/home/.claude.json'])
+  assert.deepEqual(written.mcpServers, {})
+  assert.deepEqual(written.projects[SHOP].mcpServers.web, { type: 'http', url: 'https://web.example' })
   assert.equal(deps.fs.files[backupOf('/home/.claude.json')], config)
   assert.match(result.message, /^Moved MCP server "web" from global to \/work\/shop \(only me\)\./)
   assert.deepEqual(result.undo, { type: 'move', key: mcpKeyOf(SHOP, 'local', 'web'), to: { project: null }, copy: false })
@@ -338,7 +341,28 @@ test('an MCP move whose removal fails reports the partial result honestly', asyn
   deps.cli = fakeCli(['mcp-remove:user'])
   const result = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'web'), to: { project: SHOP }, copy: false }))
   assert.equal(result.reason, 'partial')
-  assert.match(result.message, /Added MCP server "web" to \/work\/shop \(only me\), but removing it from global failed: cannot mcp-remove in user/)
+  assert.match(result.message, /^claude mcp add-json for web worked; then claude mcp remove for web failed: cannot mcp-remove in user\. The backups made first can put the files back: %2Fhome%2F\.claude\.json\./)
+})
+
+test('a claude mcp command that exits 0 without changing the file is reported as did-not-change', async () => {
+  const deps = setup()
+  deps.cli.silent = true
+  const mcp = deps.fs.files['/work/shop/.mcp.json']
+  const removed = failed(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', 'docs') }))
+  assert.equal(removed.reason, 'did-not-change')
+  assert.equal(removed.message, 'claude mcp remove for docs exited without an error, but /work/shop/.mcp.json does not show the change: no output.')
+  assert.equal(deps.fs.files['/work/shop/.mcp.json'], mcp)
+  const moved = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'web'), to: { project: SHOP }, copy: false }))
+  assert.equal(moved.reason, 'did-not-change')
+  assert.deepEqual(deps.cli.calls, ['mcp remove docs --scope project @ /work/shop', 'mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop'])
+})
+
+test('an MCP server name that looks like an option is refused before claude runs', async () => {
+  const deps = setup({ '/work/shop/.mcp.json': json({ mcpServers: { '-h': { command: 'x' } } }) })
+  const result = failed(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', '-h') }))
+  assert.equal(result.reason, 'refused')
+  assert.match(result.message, /cannot start with "-"/)
+  assert.deepEqual(deps.cli.calls, [])
 })
 
 test('an MCP move refuses a name already used at the destination, and runs nothing', async () => {

@@ -1,9 +1,11 @@
 // Moves, copies and removes single hook commands between settings files, keeping event and matcher.
-// Every write goes through updateJsonFile: version check, backup, then the write.
-import { hookEntries, isObject, versionOf, type Json } from './inventory.ts'
+// Every write is a guarded change: version check of each file, backup, then the edit; a move is one change of two
+// steps (add, then remove), so a stale view writes nothing and a failed remove is `partial`.
+import { guardedChange, type ChangeResult } from '../../core/guarded-change.ts'
+import { hookEntries, isObject, type Json } from './inventory.ts'
 import type { FileSystem } from '../../core/ports.ts'
 import type { ClaudePaths } from './ports.ts'
-import { updateJsonFile, type Clock } from './toggle.ts'
+import { claudeBackups, writeRefusal, type Clock } from './toggle.ts'
 
 export interface HookRef {
   /** null for the user settings file. */
@@ -20,9 +22,9 @@ export interface HookTarget {
   file: string
 }
 
-export type HookResult =
-  | { ok: true; backups: string[] }
-  | { ok: false; reason: string; message: string; backups: string[]; partial: boolean }
+export type HookResult = ChangeResult | { ok: false; reason: string; message: string }
+
+const refuse = (reason: string, message: string): HookResult => ({ ok: false, reason, message })
 
 export async function moveHook(
   fs: FileSystem,
@@ -33,13 +35,11 @@ export async function moveHook(
   copy: boolean,
   clock: Clock
 ): Promise<HookResult> {
-  const refuse = (reason: string, message: string): HookResult => ({ ok: false, reason, message, backups: [], partial: false })
   if (to.file === ref.file) return refuse('same-place', `"${ref.command}" is already in ${to.file}.`)
-  // Check both files before writing either, so a stale view changes nothing.
-  for (const file of [ref.file, to.file]) {
-    if (versionOf(await fs.readText(file)) !== (versions[file] ?? '')) {
-      return refuse('changed', 'The settings file changed since it was read. Refresh and try again.')
-    }
+  const writes: [string | null, string][] = copy ? [[to.project, to.file]] : [[to.project, to.file], [ref.project, ref.file]]
+  for (const [project, file] of writes) {
+    const refused = await writeRefusal(fs, paths, project, file)
+    if (refused !== null) return refused
   }
   let hook: Json | undefined
   try {
@@ -48,19 +48,12 @@ export async function moveHook(
     hook = undefined
   }
   if (hook === undefined) return refuse('changed', `"${ref.command}" is no longer in ${ref.file}.`)
-
-  const added = await updateJsonFile(
-    fs,
-    paths,
-    { project: to.project, file: to.file, version: versions[to.file] ?? '', edit: (json) => insert(json, ref, structuredClone(hook)) },
-    clock
+  const add = { effect: { kind: 'json' as const, file: to.file, edit: (json: Json) => insert(json, ref, structuredClone(hook)) } }
+  const remove = { effect: { kind: 'json' as const, file: ref.file, edit: (json: Json) => removeFrom(json, ref) } }
+  return guardedChange(
+    { fs, store: claudeBackups(paths), clock },
+    { files: copy ? [to.file] : [to.file, ref.file], versions, steps: copy ? [add] : [add, remove] }
   )
-  if (!added.ok) return { ok: false, reason: added.reason, message: added.message, backups: [], partial: false }
-  const backups = added.backup === null ? [] : [added.backup]
-  if (copy) return { ok: true, backups }
-  const removed = await removeHook(fs, paths, ref, versions, clock)
-  if (!removed.ok) return { ...removed, backups, partial: true }
-  return { ok: true, backups: [...backups, ...removed.backups] }
 }
 
 export async function removeHook(
@@ -70,14 +63,12 @@ export async function removeHook(
   versions: Record<string, string>,
   clock: Clock
 ): Promise<HookResult> {
-  const result = await updateJsonFile(
-    fs,
-    paths,
-    { project: ref.project, file: ref.file, version: versions[ref.file] ?? '', edit: (json) => remove(json, ref) },
-    clock
+  const refused = await writeRefusal(fs, paths, ref.project, ref.file)
+  if (refused !== null) return refused
+  return guardedChange(
+    { fs, store: claudeBackups(paths), clock },
+    { files: [ref.file], versions, steps: [{ effect: { kind: 'json', file: ref.file, edit: (json) => removeFrom(json, ref) } }] }
   )
-  if (!result.ok) return { ok: false, reason: result.reason, message: result.message, backups: [], partial: false }
-  return { ok: true, backups: result.backup === null ? [] : [result.backup] }
 }
 
 function find(json: Json, ref: HookRef) {
@@ -103,7 +94,7 @@ function insert(json: Json, ref: HookRef, hook: Json): string | void {
 }
 
 /** Takes the hook out; an emptied group and an emptied event go too. */
-function remove(json: Json, ref: HookRef): string | void {
+function removeFrom(json: Json, ref: HookRef): string | void {
   const entry = find(json, ref)
   if (entry === undefined) return `"${ref.command}" is no longer there.`
   const groups = json.hooks[ref.event]

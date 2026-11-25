@@ -3,7 +3,8 @@
 import { projectSettingsFile, settingsFile } from './inventory.ts'
 import type { FileSystem } from '../../core/ports.ts'
 import type { ClaudePaths, PluginCli } from './ports.ts'
-import { backUp, type Clock } from './toggle.ts'
+import { backUp } from '../../core/backups.ts'
+import { claudeBackups, type Clock } from './toggle.ts'
 
 export type UninstallResult =
   | { ok: true; backups: string[] }
@@ -46,7 +47,7 @@ export async function uninstallPlugin(
   )
   for (const file of [...new Set(files)]) {
     const text = await fs.readText(file)
-    if (text !== null) backups.push(await backUp(fs, paths, file, text, clock))
+    if (text !== null) backups.push(await backUp(fs, claudeBackups(paths), file, text, clock))
   }
 
   for (const record of runnable) {

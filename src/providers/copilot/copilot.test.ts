@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Action, Item } from '../../adapters/view.ts'
 import { itemKey, type ProviderDeps } from '../toolkit.ts'
+import { routeAction } from '../router.ts'
 import { fakeExec, fakeFs, providerContract } from '../testing.ts'
 import { copilotProvider, COPILOT_SUPPORTS } from './index.ts'
 
@@ -58,8 +59,9 @@ function machine(overrides: Record<string, string> = {}, commands: Record<string
 }
 const provider = copilotProvider()
 const viewOf = (deps: ProviderDeps) => provider.buildView(deps)
+/** Through the real router, which runs restore from the provider's declared backups. */
 const run = async (deps: ProviderDeps, action: Action, versions?: Record<string, string>) =>
-  provider.runAction(deps, { agent: 'copilot', action, versions: versions ?? (await viewOf(deps)).versions })
+  (await routeAction(deps, [provider], { agent: 'copilot', action, versions: versions ?? (await viewOf(deps)).versions })).result
 const byKind = (items: Item[], kind: Item['kind']) => items.filter((item) => item.kind === kind)
 const summary = (item: Item) => `${item.name} ${item.project ?? 'global'} ${item.movable ? 'rw' : 'ro'}`
 

@@ -66,7 +66,7 @@ test('a CLI that exits 0 without changing anything is reported as a failure with
   const view = await viewOf(m.deps)
   const answer = await act(m.deps, { type: 'setEnabled', key: itemOf(view, 'plugins', 'obsidian').key, enabled: false }, view.versions)
   assert.equal(answer.result.ok, false)
-  assert.equal(refused(answer.result).reason, 'cli')
+  assert.equal(refused(answer.result).reason, 'did-not-change')
   assert.match(answer.result.message, /does not exist/)
 })
 
@@ -201,6 +201,20 @@ test('moving an MCP server runs `gemini mcp add` at the destination, then `gemin
   ])
 })
 
+test('a move whose remove leaves the server at its source is partial, naming the backups', async () => {
+  const m = withCli((m, argv, cwd) => {
+    if (argv[1] !== 'add') return { ok: true, output: 'removed' }
+    const file = cwd === SHOP ? SHOP_SETTINGS : USER_SETTINGS
+    const settings = JSON.parse(m.fs.files[file].replace(/^\/\/.*\n/, ''))
+    settings.mcpServers[argv[6]] = { command: argv[7], args: argv.slice(9) }
+    write(m, file, settings)
+  })
+  const view = await viewOf(m.deps)
+  const moved = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'db', SHOP).key, to: { project: null }, copy: false }, view.versions)
+  assert.equal(refused(moved.result).reason, 'partial')
+  assert.match(moved.result.message, /^gemini mcp add for db worked; then gemini mcp remove for db exited without an error, but \/work\/shop\/\.gemini\/settings\.json does not show the change: removed\. The backups made first can put the files back: /)
+})
+
 test('an MCP server with secret-looking env or args is not movable: the CLI would put them on its command line', async () => {
   const m = withCli(() => undefined)
   const view = await viewOf(m.deps)
@@ -310,7 +324,7 @@ test('B4: a failing gemini command is named with its server and outcome, never i
   const m = withCli(() => ({ ok: false, output: 'Error: rejected --api-key sk-live-SECRET1234567890' }))
   const view = await viewOf(m.deps)
   const answer = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'context7').key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
-  assert.equal(refused(answer.result).reason, 'cli')
+  assert.equal(refused(answer.result).reason, 'cli-failed')
   assert.match(answer.result.message, /gemini mcp add/)
   assert.match(answer.result.message, /context7/)
   assert.doesNotMatch(answer.result.message, /sk-live|--transport|--scope|@upstash/)
