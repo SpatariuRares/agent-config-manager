@@ -32,7 +32,7 @@ import {
 export const CLAUDE = 'claude'
 
 /** What an item key points at in the setup. */
-type Ref =
+export type Ref =
   | { kind: 'plugins'; id: string; project: string | null; scope: 'user' | 'project' | 'local'; enabled: boolean }
   | { kind: 'entry'; entry: Entry }
   | { kind: 'mcp'; server: ScopedMcp }
@@ -485,7 +485,7 @@ export const hookKey = (file: string, event: string, rawMatcher: string, command
 
 // ---- reading
 
-async function read(deps: ClaudeDeps): Promise<Read> {
+export async function read(deps: ClaudeDeps): Promise<Read> {
   const { fs, paths } = deps
   const setup = await readSetup(fs, paths)
   const refs = new Map<string, Ref>()

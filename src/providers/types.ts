@@ -3,7 +3,7 @@
 // (./router.ts) does everything shared: picking the agent, detection, refusing what a provider did not declare,
 // error handling, and the fresh view after every action.
 import type { Clock, CommandRunner, FileSystem, Http } from '../core/ports.ts'
-import type { ActionRequest, ActionResult, ActionType, AgentId, AgentInfo, Kind, UpdatesAnswer, View } from '../adapters/view.ts'
+import type { ActionRequest, ActionResult, ActionType, AgentId, AgentInfo, Kind, Target, UpdatesAnswer, View } from '../adapters/view.ts'
 
 /** What every provider gets on every call. Nothing else touches the machine. */
 export interface ProviderDeps {
@@ -48,7 +48,55 @@ export interface AgentProvider {
 
   /** The on-demand update check (network). Omit it when nothing of this agent can be checked. */
   checkUpdates?(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer>
+
+  /**
+   * 'copyToAgent', source side: the item as an agent-neutral Portable, read from the agent's own files. Required
+   * when `info().exports` lists a class. Refuses (never drops) what the Portable shape cannot carry. Reads only.
+   */
+  exportItem?(deps: ProviderDeps, key: string): Promise<Exported>
+
+  /**
+   * 'copyToAgent', target side: adds the item through this agent's own write path and rules (version check
+   * against `versions`, backup first, its CLI when it has one, no writes to shared places, the secret refusals).
+   * Required when `info().imports` lists a class. The router has already checked the scope against
+   * `projectScopes`; `versions` is this agent's view, read just before. The undo, if any, is for this agent.
+   */
+  importItem?(deps: ProviderDeps, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult>
 }
+
+/** The classes 'copyToAgent' can carry. */
+export const PORTABLE_KINDS: readonly Kind[] = ['skills', 'mcp']
+
+/**
+ * An MCP server as any agent can describe it. Values are as written: a `${VAR}` reference stays a reference.
+ * stdio servers have `command` (and maybe `args`, `env`); http and sse servers have `url` (and maybe `headers`).
+ * It lives only in memory between exportItem and importItem: never in a view, a message or a file of this app.
+ */
+export interface PortableMcp {
+  kind: 'mcp'
+  name: string
+  transport: 'stdio' | 'http' | 'sse'
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+}
+
+/** A skill: its folder (the one holding SKILL.md), copied as is with the toolkit's copy; a symlink stays a link. */
+export interface PortableSkill {
+  kind: 'skills'
+  name: string
+  dir: string
+  /** The symlink text when `dir` is a symlink. */
+  link: string | null
+}
+
+export type Portable = PortableMcp | PortableSkill
+
+export type Refusal = ActionResult & { ok: false }
+
+export type Exported = { ok: true; item: Portable } | Refusal
 
 export const KINDS: readonly Kind[] = ['plugins', 'skills', 'agents', 'mcp', 'hooks']
 

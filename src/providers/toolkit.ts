@@ -26,9 +26,22 @@ export { appBackupDir, existingProjects, occupied, sameFolder, tilde } from '../
 export { describe, readAgents, readSkills, sortByName, type Agent, type Skill } from '../core/markdown.ts'
 // Moving, copying and listing skill folders and agent files.
 export { moveEntry, readEntryDir, type EntryKind, type EntryPlaces, type EntryRef, type EntryResult } from '../core/entries.ts'
-// Running an agent CLI: refuse user values that look like options before building argv.
-export { optionLikeRefusal } from '../core/cli.ts'
+// Running an agent CLI: refuse user values that look like options before building argv; quote a command shown to the user.
+export { optionLikeRefusal, shellQuote } from '../core/cli.ts'
 // Secret-safe text: MCP args and URLs, hook commands and CLI output pass through these before an item or a message shows them.
 export { argsHaveSecret, looksSecret, REDACTED, redactArgs, redactCommand, redactUrl, urlHasSecret } from '../core/redact.ts'
 // Item keys the router can read the kind from.
-export { itemKey, KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
+export {
+  itemKey,
+  KINDS,
+  type AgentProvider,
+  type Exported,
+  type Portable,
+  type PortableMcp,
+  type PortableSkill,
+  type ProviderDeps,
+  type ProviderView,
+  type Refusal
+} from './types.ts'
+// 'copyToAgent': Portable shapes from an agent's fields, and the secret refusals every import applies.
+export { exportSkill, isReference, literalValues, mcpJson, portableMcp, secretRefusal, skillEntry, type McpFields } from './portable.ts'

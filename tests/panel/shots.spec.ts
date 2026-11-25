@@ -74,7 +74,7 @@ for (const scheme of ['dark', 'light'] as const) {
     await expect(page.locator('pre.cmd')).toBeVisible()
     await page.screenshot({ animations: 'disabled', path: `${dir}/updates-confirm-${scheme}-360.png` })
 
-    await page.getByRole('button', { name: 'Run update' }).click()
+    await page.getByRole('button', { name: 'Run', exact: true }).click()
     await expect(page.locator('#notice')).toContainText('Updated deploy-helpers')
     await page.getByRole('tab', { name: /Skills/ }).click()
     await page.getByRole('button', { name: /^Update all/ }).click()

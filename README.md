@@ -9,14 +9,21 @@ editor. The same panel also loads as an [Orca](https://github.com/stablyai/orca)
 
 ## Run it
 
-Requires Node 23.6+ (it runs TypeScript directly) and the `claude` CLI on your PATH.
+Requires Node 23.6+ (it runs TypeScript directly) and the `claude` CLI on your PATH. It is not on
+npm yet: install the `agent-config` command from a clone.
 
 ```sh
 npm install
-npm start                      # opens http://127.0.0.1:4321/#token=… in your browser
-npm start -- --port 5000       # another port
-npm start -- --no-open         # print the link instead of opening it
+npm link                       # or: npm install -g .  (links the agent-config command to this clone)
+agent-config                   # opens http://127.0.0.1:4321/#token=… in your browser
+agent-config start --port 5000 # another port; --no-open prints the link instead
+agent-config install-commands  # adds /agent-config to Claude Code, Codex, Gemini CLI and Copilot CLI
 ```
+
+After `install-commands`, type `/agent-config` in Claude Code, Gemini CLI or Copilot CLI (in Codex:
+`$agent-config`), and the agent starts the panel and gives you the link. `npm start` still works
+from the clone. See [docs/launching.md](docs/launching.md) for every option and the exact files
+written.
 
 Keep the terminal open while you use the page; Ctrl-C stops it. The server listens on 127.0.0.1
 only and prints a new secret link on every start: the page must be opened from that link, and
@@ -26,31 +33,28 @@ setup.
 ## How it is built
 
 ```
-src/core/            Pure TypeScript, no Orca or HTTP: reads the setup into one model
-  ports.ts           FileSystem: the only way the core touches the disk
-  inventory.ts       readInventory(fs, paths) -> plugins, skills, agents, MCP, hooks
+src/core/            Agent-neutral safety: versioned JSON writes, backups, trash, path guards,
+                     CLI argv, secret redaction
+src/providers/       One folder per agent (claude, codex, gemini, copilot) behind AgentProvider;
+                     router.ts refuses anything an agent did not declare
 src/adapters/
   view.ts            The panel contract: view.get, action.run, updates.check
-  backend.ts         buildView / runAction over the core
-  node-fs.ts         FileSystem over node:fs, shared by every adapter
   http/              localhost server: serves panel/ and answers the contract as JSON
   orca/              Orca plugin worker answering the same contract
+src/cli/             The agent-config command
 panel/               The HTML panel; transport.js picks localhost, Orca or a test fixture
 ```
 
-The core never knows where it runs. Each target is an adapter around it.
+## What it reads and changes
 
-## What it reads
+| Agent | Reads | Changes |
+| --- | --- | --- |
+| Claude Code | `~/.claude` (settings, skills, agents, plugins), `~/.claude.json`, project `.claude/` and `.mcp.json` | Plugins, skills, agents, MCP servers and hooks: on/off, move, copy, remove, update |
+| Codex | `~/.codex` (`config.toml`, skills, agents, hooks), project `.codex/` and `.agents/` | MCP servers through `codex mcp`; skills and agent files. `config.toml` is never rewritten; plugins and hooks are read-only |
+| Gemini CLI | `~/.gemini` (`settings.json`, extensions, skills, agents), project `.gemini/` | Extensions through `gemini extensions`, MCP servers through `gemini mcp`; skills, agents and hooks are read-only |
+| Copilot CLI | `~/.copilot` (`mcp-config.json`, skills, agents, plugins, hooks), project `.github/` | MCP servers, skills and agents |
 
-| Section | Source |
-| --- | --- |
-| Plugins | `enabledPlugins` in `~/.claude/settings.json` |
-| Skills | `~/.claude/skills/*/SKILL.md` (folders without one are skipped) |
-| Agents | `~/.claude/agents/*.md` |
-| MCP servers | `mcpServers` in `~/.claude.json` (user scope) |
-| Hooks | `hooks` in `~/.claude/settings.json` |
-
-A file that exists but cannot be parsed shows as a warning; the rest still loads.
+Folders several agents read (`~/.agents/skills`, a project's `.claude/` and `.mcp.json` for the other agents) are read-only. MCP servers and skills can be copied from one agent to another. Every change backs up the file first and is refused when the file changed since it was read. A file that exists but cannot be parsed shows as a warning; the rest still loads.
 
 ## Develop
 

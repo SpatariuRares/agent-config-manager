@@ -43,6 +43,7 @@ import { KINDS, type AgentProvider } from '../types.ts'
 import { geminiAction } from './actions.ts'
 import { geminiPaths } from './paths.ts'
 import { GEMINI, readSetup, type Setup } from './read.ts'
+import { exportGemini, importGemini } from './transfer.ts'
 
 /** What works, per class. Backups (restore, snapshot) cover the files the CLI changes for these actions. */
 export const GEMINI_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
@@ -50,10 +51,18 @@ export const GEMINI_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
   mcp: ['move', 'remove', 'setEnabled', 'restore', 'snapshot']
 }
 
-/** MCP servers go to the project's .gemini/settings.json, which is shared: Gemini CLI has no only-me project file (moveMcp). */
+/**
+ * MCP servers go to the project's .gemini/settings.json, which is shared: Gemini CLI has no only-me project file
+ * (moveMcp). Skills copied in from another agent go to the project's .gemini/skills, also shared (./transfer.ts).
+ */
 export const GEMINI_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
+  skills: ['project'],
   mcp: ['project']
 }
+
+/** 'copyToAgent': what Gemini CLI hands to another agent, and takes from one (./transfer.ts). */
+export const GEMINI_EXPORTS: Kind[] = ['skills', 'mcp']
+export const GEMINI_IMPORTS: Kind[] = ['skills', 'mcp']
 
 /** An MCP item carries its switch: off when `gemini mcp disable` turned it off (mcp-server-enablement.json). */
 function withSwitches({ view, refs }: Setup) {
@@ -65,9 +74,10 @@ function withSwitches({ view, refs }: Setup) {
 }
 
 const NOTE =
-  'Skills, agents and hooks are read-only here: Gemini CLI has no command that removes or moves them. ' +
+  'Skills, agents and hooks are read-only here: this app does not move or remove them for Gemini CLI. ' +
+  'A skill copied in from another agent goes to ~/.gemini/skills or <project>/.gemini/skills; remove it with gemini skills uninstall. ' +
   'Install extensions with gemini extensions install; updates are not checked ahead, since Gemini CLI has no read-only check. ' +
-  'MCP servers with env values or headers do not move, so no secret lands on a command line.'
+  'MCP servers with env values or headers do not move, so no secret lands on a command line; one copied in from another agent may carry them only as ${VAR} references or values that look like no secret.'
 
 export function geminiProvider(): AgentProvider {
   return {
@@ -82,11 +92,15 @@ export function geminiProvider(): AgentProvider {
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(GEMINI_SUPPORTS).map(([kind, actions]) => [kind, [...(actions ?? [])]])),
         projectScopes: Object.fromEntries(Object.entries(GEMINI_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
+        exports: [...GEMINI_EXPORTS],
+        imports: [...GEMINI_IMPORTS],
         configHome: '~/.gemini',
         note: NOTE
       }
     },
     buildView: async (deps) => withSwitches(await readSetup(deps.fs, geminiPaths(deps.home))),
-    runAction: (deps, request) => geminiAction(deps, geminiPaths(deps.home), request)
+    runAction: (deps, request) => geminiAction(deps, geminiPaths(deps.home), request),
+    exportItem: (deps, key) => exportGemini(deps, geminiPaths(deps.home), key),
+    importItem: (deps, item, to, versions) => importGemini(deps, geminiPaths(deps.home), item, to, versions)
   }
 }

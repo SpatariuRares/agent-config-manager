@@ -29,8 +29,10 @@ export interface CommandRunner {
   /**
    * Runs `command` (a name looked up like find(), or an absolute path) with `argv` in `cwd` (null: the home
    * folder). Never throws: a missing command is `{ ok: false, output: 'The <command> command was not found.' }`.
+   * `closeStdin` gives the program an empty stdin that is already closed, so a question it asks there (a consent
+   * prompt) ends at once instead of waiting for the timeout.
    */
-  run(command: string, argv: readonly string[], cwd: string | null, options?: { timeoutMs?: number }): Promise<CliResult>
+  run(command: string, argv: readonly string[], cwd: string | null, options?: { timeoutMs?: number; closeStdin?: boolean }): Promise<CliResult>
   /** The absolute path of the executable `name` on PATH (or in the usual install folders), or null. Starts no process. */
   find(name: string): Promise<string | null>
 }

@@ -3,7 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { claudeCli, findClaude } from './claude-cli.ts'
+import { claudeCli, findClaude, nodeCommandRunner } from './claude-cli.ts'
 
 const scratch = await mkdtemp(join(tmpdir(), 'ccm-cli-'))
 after(() => rm(scratch, { recursive: true, force: true }))
@@ -120,4 +120,16 @@ test('finds any command on PATH the way it finds claude', async () => {
   const { findCommand } = await import('./claude-cli.ts')
   assert.equal(await findCommand('npx', tools), join(tools, 'npx'))
   assert.equal(await findCommand('no-such-command-here', tools), null)
+})
+
+test('closeStdin gives the program an empty, closed stdin, so a prompt ends at once instead of at the timeout', async () => {
+  // A stand-in for a CLI that asks a question on stdin: `read` returns at end of input and prints "eof".
+  const asks = join(scratch, 'asks')
+  await writeFile(asks, '#!/bin/sh\nprintf "Continue? [Y/n]: "\nif read answer; then echo "answer:$answer"; else echo eof; fi\n')
+  await chmod(asks, 0o755)
+  const runner = nodeCommandRunner(async () => null)
+  assert.deepEqual(await runner.run(asks, [], scratch, { timeoutMs: 10_000, closeStdin: true }), { ok: true, output: 'Continue? [Y/n]: eof' })
+  // Without it the question waits for an answer that never comes, until the timeout.
+  const waiting = await runner.run(asks, [], scratch, { timeoutMs: 300 })
+  assert.equal(waiting.ok, false)
 })

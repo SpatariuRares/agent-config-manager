@@ -4,6 +4,18 @@
   "private": true,
   "description": "See and manage your Claude Code setup: plugins, skills, agents, MCP servers and hooks.",
   "type": "module",
+  "bin": {
+    "agent-config": "bin/agent-config.js"
+  },
+  "files": [
+    "bin/",
+    "panel/",
+    "src/",
+    "!src/**/*.test.ts",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=23.6"
   },

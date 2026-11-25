@@ -272,19 +272,20 @@ test('the real http port reads JSON, and reports rate limits and failures instea
   const server = createServer((req, res) => {
     if (req.url === '/ok') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"version":"1.2.3"}')
     if (req.url === '/limited') return res.writeHead(403, { 'x-ratelimit-remaining': '0' }).end('{"message":"API rate limit exceeded"}')
-    if (req.url === '/slow') return setTimeout(() => res.end('{}'), 500)
+    // Never answers: only the timeout can end this request, however slow the machine is.
+    if (req.url === '/slow') return
     res.writeHead(500).end('boom')
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
   try {
-    const http = fetchHttp(100)
+    // The answering routes get the default timeout: a loaded machine (test files run in parallel) can take more
+    // than a short one to open the first connection, which made this test fail now and then.
+    const http = fetchHttp()
     assert.deepEqual(await http.getJson(`${base}/ok`), { ok: true, status: 200, json: { version: '1.2.3' } })
     assert.deepEqual(await http.getJson(`${base}/limited`), { ok: false, status: 403, error: 'HTTP 403: rate limit reached', rateLimited: true })
     assert.deepEqual(await http.getJson(`${base}/fail`), { ok: false, status: 500, error: 'HTTP 500', rateLimited: false })
-    const slow = await http.getJson(`${base}/slow`)
-    assert.equal(slow.ok, false)
-    assert.equal((slow as { status: number | null }).status, null)
+    assert.deepEqual(await fetchHttp(100).getJson(`${base}/slow`), { ok: false, status: null, error: 'no answer within 0.1s', rateLimited: false })
   } finally {
     server.closeAllConnections()
     server.close()

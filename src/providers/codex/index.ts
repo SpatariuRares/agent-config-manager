@@ -43,6 +43,7 @@
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
 import { codexAction } from './actions.ts'
+import { exportCodex, importCodex } from './transfer.ts'
 import { CODEX, codexPaths, readCodex } from './read.ts'
 
 /** What works today, per class. Plugins and hooks are read-only; see NOTE. */
@@ -61,6 +62,10 @@ export const CODEX_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
   agents: ['project']
 }
 
+/** 'copyToAgent': what Codex hands to another agent, and takes from one (./transfer.ts). */
+export const CODEX_EXPORTS: Kind[] = ['skills', 'mcp']
+export const CODEX_IMPORTS: Kind[] = ['skills', 'mcp']
+
 export const CODEX_NOTE =
   'Plugins and hooks are read-only: Codex has no command to turn a plugin on or off, and editing hooks.json changes ' +
   'the hashes Codex trusts hooks by, so it would skip them until you review them again in /hooks. ' +
@@ -68,7 +73,8 @@ export const CODEX_NOTE =
   'server can only be copied to global with `codex mcp add` (stdio servers with just a command and args, and no secret on that command line). ' +
   'Skills in ~/.agents/skills and <project>/.agents/skills are read-only, because other agents (Gemini CLI, Copilot CLI) read them too; ' +
   'a skill moved into a project goes to <project>/.codex/skills. ' +
-  'Project .codex/config.toml files, [agents] roles and AGENTS.md are read-only.'
+  'Project .codex/config.toml files, [agents] roles and AGENTS.md are read-only. ' +
+  'An MCP server copied in from another agent goes to ~/.codex/config.toml with `codex mcp add`, which takes a stdio command line only: servers with env values, a url or headers are refused.'
 
 export function codexProvider(): AgentProvider {
   return {
@@ -83,12 +89,16 @@ export function codexProvider(): AgentProvider {
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(CODEX_SUPPORTS).map(([kind, actions]) => [kind, [...(actions ?? [])]])),
         projectScopes: Object.fromEntries(Object.entries(CODEX_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
+        exports: [...CODEX_EXPORTS],
+        imports: [...CODEX_IMPORTS],
         configHome: '~/.codex',
         note: CODEX_NOTE
       }
     },
     buildView: async (deps) => (await readCodex(deps)).view,
-    runAction: (deps, request) => codexAction(deps, request)
+    runAction: (deps, request) => codexAction(deps, request),
+    exportItem: (deps, key) => exportCodex(deps, key),
+    importItem: (deps, item, to, versions) => importCodex(deps, item, to, versions)
   }
 }
 

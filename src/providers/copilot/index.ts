@@ -34,6 +34,7 @@ import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/v
 import type { AgentProvider } from '../types.ts'
 import { COPILOT, copilotPaths, OWNER } from './paths.ts'
 import { readCopilot } from './read.ts'
+import { exportCopilot, importCopilot } from './transfer.ts'
 import { runCopilotAction } from './write.ts'
 
 /** What works today, per class. `restore` puts back what a remove or a move changed. */
@@ -53,11 +54,16 @@ export const COPILOT_PROJECT_SCOPES: Partial<Record<Kind, ProjectScope[]>> = {
   mcp: ['project']
 }
 
+/** 'copyToAgent': what Copilot CLI hands to another agent, and takes from one (./transfer.ts). */
+export const COPILOT_EXPORTS: Kind[] = ['skills', 'mcp']
+export const COPILOT_IMPORTS: Kind[] = ['skills', 'mcp']
+
 export const COPILOT_NOTE = [
   'Plugins are read-only: `copilot plugin` manages them, and where it keeps the on/off state is not documented.',
   'Hooks are read-only, and inline hooks in settings.json are not shown.',
   'Items in shared places (.agents/, .claude/, .mcp.json) are read-only, since other agents read them too.',
   'MCP writes edit mcp-config.json or .github/mcp.json directly, with a backup first.',
+  'Skills and MCP servers copied in from another agent land in the same places; a project copy refuses literal env or header values and secret-looking args or urls.',
   'Projects are the folders you trusted in Copilot CLI. COPILOT_HOME is not followed: only ~/.copilot is read.'
 ].join(' ')
 
@@ -75,11 +81,15 @@ export function copilotProvider(): AgentProvider {
         kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'],
         supports: Object.fromEntries(Object.entries(COPILOT_SUPPORTS).map(([kind, actions]) => [kind, [...actions]])),
         projectScopes: Object.fromEntries(Object.entries(COPILOT_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...(scopes ?? [])]])),
+        exports: [...COPILOT_EXPORTS],
+        imports: [...COPILOT_IMPORTS],
         configHome: '~/.copilot',
         note: COPILOT_NOTE
       }
     },
     buildView: async ({ fs, home }) => (await readCopilot(fs, copilotPaths(home))).view,
-    runAction: ({ fs, home, clock }, request) => runCopilotAction(fs, copilotPaths(home), clock ?? (() => new Date()), request)
+    runAction: ({ fs, home, clock }, request) => runCopilotAction(fs, copilotPaths(home), clock ?? (() => new Date()), request),
+    exportItem: ({ fs, home }, key) => exportCopilot(fs, copilotPaths(home), key),
+    importItem: ({ fs, home, clock }, item, to, versions) => importCopilot(fs, copilotPaths(home), clock ?? (() => new Date()), item, to, versions)
   }
 }
