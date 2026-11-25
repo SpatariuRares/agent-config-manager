@@ -43,6 +43,7 @@
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
 import { codexAction } from './actions.ts'
+import { CODEX_ADD } from './mcp-add.ts'
 import { exportCodex, importCodex } from './transfer.ts'
 import { CODEX, codexPaths, readCodex } from './read.ts'
 
@@ -79,6 +80,7 @@ export const CODEX_NOTE =
 export function codexProvider(): AgentProvider {
   return {
     id: CODEX,
+    mcpDestinations: [CODEX_ADD],
     async info(deps): Promise<AgentInfo> {
       const paths = codexPaths(deps.home)
       const detected = (await deps.exec.find('codex')) !== null || (await deps.fs.realPath(paths.codexHome)) !== null

@@ -9,7 +9,7 @@
 // editJsonFile keeps every other key and server as it was, in the same 2-space format Copilot writes.
 import type { Action, ActionRequest, ActionResult, Kind } from '../../adapters/view.ts'
 import {
-  argsHaveSecret,
+  admitMcp,
   backupTarget,
   CHANGED,
   editJsonFile,
@@ -17,18 +17,32 @@ import {
   isTrashName,
   itemKey,
   moveEntry,
+  privateFile,
   restoreFile,
   restoreTrash,
+  teamFile,
   tilde,
   trashEntry,
-  urlHasSecret,
   versionOf,
+  type Carries,
   type Clock,
   type FileSystem,
   type Json
 } from '../toolkit.ts'
 import { OWNER, ownPlace, type CopilotPaths } from './paths.ts'
-import { readCopilot, type Ref } from './read.ts'
+import { copilotMcpConfig, readCopilot, type Ref } from './read.ts'
+
+/**
+ * What Copilot CLI's MCP files hold: `local`/`stdio` servers with command, args and env, `http`/`sse` servers
+ * with url and headers ("Adding MCP servers for GitHub Copilot CLI", docs.github.com). The file is written as
+ * JSON, so a move keeps every other key of the server (tools, cwd, OAuth settings) as it was.
+ */
+const COPILOT_MCP: Carries = { transports: ['stdio', 'http', 'sse'], fields: ['args', 'env', 'headers'], keeps: () => true }
+
+/** A project's .github/mcp.json: shared with the team through the repository. */
+export const COPILOT_TEAM_FILE = teamFile('a project .github/mcp.json', COPILOT_MCP)
+/** ~/.copilot/mcp-config.json: the user's own file; no command line sees it. */
+export const COPILOT_PRIVATE_FILE = privateFile('~/.copilot/mcp-config.json', COPILOT_MCP)
 
 const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 const fail = (reason: string, message: string): ActionResult => ({ ok: false, reason, message })
@@ -101,21 +115,9 @@ async function moveServer(
   }
   const file = ownPlace(paths, 'mcp', project)
   if (file === ref.file) return { ok: false, reason: 'same-place', message: `"${ref.name}" is already there.` }
-  // A project file is shared through the repository: a literal token in env or headers must not land there.
-  if (project !== null && hasLiteralSecret(ref.config)) {
-    return {
-      ok: false,
-      reason: 'secret',
-      message: `"${ref.name}" has literal env or header values. Replace them with \${VAR} references first: a project file is shared with the team.`
-    }
-  }
-  if (project !== null && commandLineSecret(ref.config)) {
-    return {
-      ok: false,
-      reason: 'secret',
-      message: `"${ref.name}" has a secret-looking value in its args or url. Move it into an env value with a \${VAR} reference first: a project file is shared with the team.`
-    }
-  }
+  // The file is written as JSON, not through a command line; a project file is shared through the repository.
+  const admitted = admitMcp(copilotMcpConfig(ref.name, ref.config), project === null ? COPILOT_PRIVATE_FILE : COPILOT_TEAM_FILE)
+  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : { ok: false, reason: 'not-movable', message: admitted.message }
   for (const path of [file, ref.file]) {
     if (versionOf(await fs.readText(path)) !== (versions[path] ?? '')) return CHANGED
   }
@@ -140,19 +142,6 @@ function addServer(json: Json, ref: Ref & { kind: 'mcp' }, file: string): string
 function deleteServer(json: Json, ref: Ref & { kind: 'mcp' }): string | void {
   if (!isObject(json.mcpServers) || !Object.hasOwn(json.mcpServers, ref.name)) return `"${ref.name}" is no longer in ${ref.file}.`
   delete json.mcpServers[ref.name]
-}
-
-/** True when the args or the url hold a value that looks like a credential (the toolkit's redaction rules). */
-function commandLineSecret(config: Json): boolean {
-  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word): word is string => typeof word === 'string')
-  return argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))
-}
-
-/** True when env or headers hold a value that is not a `$VAR` / `${VAR}` reference. */
-function hasLiteralSecret(config: Json): boolean {
-  return ['env', 'headers'].some(
-    (field) => isObject(config[field]) && Object.values(config[field]).some((value) => typeof value !== 'string' || !value.includes('$'))
-  )
 }
 
 /**

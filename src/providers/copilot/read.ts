@@ -3,6 +3,7 @@
 // the toolkit's redaction (redactArgs, redactUrl, redactCommand). Parse errors are reported with a fixed message, never the parser's, because that can quote the file.
 import type { Item, Kind } from '../../adapters/view.ts'
 import {
+  describeMcp,
   existingProjects,
   isObject,
   itemKey,
@@ -11,14 +12,13 @@ import {
   readAgents,
   readEntryDir,
   readSkills,
-  redactArgs,
   redactCommand,
-  redactUrl,
   sortByName,
   versionOf,
   type EntryRef,
   type FileSystem,
   type Json,
+  type McpConfig,
   type ProviderView
 } from '../toolkit.ts'
 import { COPILOT, placesOf, type CopilotPaths, type Place } from './paths.ts'
@@ -98,7 +98,7 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
       versions[place.path] = versionOf(text)
       for (const [name, config] of serversIn(text, place.path, problems)) {
         const key = itemKey('mcp', place.path, name)
-        add({ ...base('mcp', key, name, project, place.path, place), mcp: describeServer(config) }, { kind: 'mcp', project, file: place.path, name, config })
+        add({ ...base('mcp', key, name, project, place.path, place), mcp: describeMcp(copilotMcpConfig(name, config)) }, { kind: 'mcp', project, file: place.path, name, config })
         if (!sources.has(key)) sources.set(key, { kind: 'mcp', name, config })
       }
     }
@@ -160,13 +160,15 @@ function serversIn(text: string | null, file: string, problems: string[]): [stri
   return Object.entries(json.mcpServers).filter((entry): entry is [string, Json] => isObject(entry[1]))
 }
 
-/** Transport and target, without env or headers. Copilot calls stdio `local`; both are shown as stdio. */
-function describeServer(config: Json): { transport: string; target: string } {
-  const url = typeof config.url === 'string' ? config.url : null
-  const type = typeof config.type === 'string' ? config.type : url ? 'http' : 'stdio'
-  const args = Array.isArray(config.args) ? config.args.filter((arg) => typeof arg === 'string') : []
-  const target = url !== null ? redactUrl(url) : redactArgs([config.command, ...args].filter((part) => typeof part === 'string' && part !== '')).join(' ')
-  return { transport: type === 'local' ? 'stdio' : type, target }
+/**
+ * A Copilot CLI server as McpConfig: Copilot calls stdio `local`, and without a type a url means http.
+ * `tools: ["*"]` (every tool) is the default and what other agents do anyway, so it is omitted.
+ */
+export function copilotMcpConfig(name: string, config: Json): McpConfig {
+  const { type, command, args, env, url, headers, tools, ...rest } = config
+  if (tools !== undefined && !(Array.isArray(tools) && tools.length === 1 && tools[0] === '*')) rest.tools = tools
+  const transport = type === undefined ? (typeof url === 'string' ? 'http' : 'stdio') : type === 'local' ? 'stdio' : String(type)
+  return { name, transport, command, args, url, env, headers, rest }
 }
 
 /** Hook entries of a hooks file: `{ "version": 1, "hooks": { <event>: [ {...} ] } }`. env is never read. */

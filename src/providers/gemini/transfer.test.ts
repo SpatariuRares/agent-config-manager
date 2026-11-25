@@ -65,7 +65,7 @@ test('Gemini export refuses settings another agent cannot take (timeout, trust, 
   const { deps } = machine({ files: fixture })
   const result = (await provider.exportItem!(deps, itemKey('mcp', null, 'tuned'))) as ActionResult
   assert.equal(refused(result).reason, 'not-portable')
-  assert.match(result.message, /timeout, trust, includeTools/)
+  assert.match(result.message, /rest\.timeout, rest\.trust, rest\.includeTools/)
 })
 
 test('Gemini export: a skill as its folder', async () => {

@@ -296,3 +296,18 @@ test('an MCP server with a secret in its args or url is not copied into a projec
   }
   assert.deepEqual(fs.files, before)
 })
+
+test('the Copilot bug: an env value with a `$` but no ${VAR} reference is a literal, and is not moved into the team .github/mcp.json', async () => {
+  const value = 'sk-live-0123456789abcdef$x'
+  const { deps, fs } = machine({ [MCP]: json({ mcpServers: { sneaky: { command: 's', args: [], env: { TOKEN: value } } } }) })
+  const before = structuredClone(fs.files)
+  const moved = await run(deps, { type: 'move', key: mcpKey(MCP, 'sneaky'), to: { project: SHOP, scope: 'project' }, copy: false })
+  assert.equal(!moved.ok && moved.reason, 'secret')
+  assert.match(moved.message, /literal env or header values \(env\.TOKEN\)/)
+  assert.ok(!moved.message.includes(value), 'the message shows the value')
+  assert.deepEqual(fs.files, before, 'nothing was written')
+  // Its own user file is not shared, and no command line sees it: a copy to global keeps the literal.
+  const global = machine({ [`${SHOP}/.github/mcp.json`]: json({ mcpServers: { sneaky: { command: 's', env: { TOKEN: value } } } }) })
+  const copied = await run(global.deps, { type: 'move', key: mcpKey(`${SHOP}/.github/mcp.json`, 'sneaky'), to: { project: null }, copy: true })
+  assert.equal(copied.ok, true, copied.message)
+})

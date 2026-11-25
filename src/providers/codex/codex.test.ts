@@ -343,7 +343,7 @@ test('MCP remove keeps no undo, and says why, when `codex mcp add` cannot recrea
     }
   })
   let view = await viewOf(m.deps)
-  for (const [name, why] of [['context7', /only stdio servers/], ['off', /enabled/]] as const) {
+  for (const [name, why] of [['context7', /Only stdio servers/], ['off', /enabled/]] as const) {
     const answer = await act(m.deps, view, { type: 'remove', key: named(view, 'mcp', name).key })
     assert.equal(answer.result.ok, true, answer.result.message)
     assert.equal((answer.result as ActionResult & { ok: true }).undo, undefined, name)

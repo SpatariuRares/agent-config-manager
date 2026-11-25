@@ -2,9 +2,10 @@
 // Out: any skill or server the view shows, shared places included (an export only reads). In: through the same
 // write path as a move (./write.ts): MCP servers into Copilot's own file with editJsonFile (version check, backup
 // first), skill folders into Copilot's own folder with moveEntry (never overwriting, a link kept as a link). No
-// command line is involved, so only a project file, which the team shares, refuses literal values and secrets.
+// command line is involved: the server is admitted against COPILOT_PRIVATE_FILE or COPILOT_TEAM_FILE.
 import type { ActionResult, Kind, Target } from '../../adapters/view.ts'
 import {
+  admitMcp,
   editJsonFile,
   exportSkill,
   isObject,
@@ -12,7 +13,6 @@ import {
   mcpJson,
   moveEntry,
   portableMcp,
-  secretRefusal,
   skillEntry,
   tilde,
   type Clock,
@@ -21,7 +21,8 @@ import {
   type Portable
 } from '../toolkit.ts'
 import { OWNER, ownPlace, type CopilotPaths } from './paths.ts'
-import { readCopilot } from './read.ts'
+import { copilotMcpConfig, readCopilot } from './read.ts'
+import { COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE } from './write.ts'
 
 const GONE = { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' } as const
 
@@ -29,13 +30,7 @@ export async function exportCopilot(fs: FileSystem, paths: CopilotPaths, key: st
   const source = (await readCopilot(fs, paths)).sources.get(key)
   if (source === undefined) return GONE
   if (source.kind === 'skills') return exportSkill(fs, source.name, source.dir)
-  const { type, command, args, env, url, headers, tools, ...rest } = source.config
-  const extra = Object.keys(rest)
-  // `tools: ["*"]` (every tool) is what other agents do anyway; a narrower list cannot be carried.
-  if (tools !== undefined && !(Array.isArray(tools) && tools.length === 1 && tools[0] === '*')) extra.push('tools')
-  // Copilot calls stdio `local`; without a type, a url means http.
-  const transport = type === undefined ? (typeof url === 'string' ? 'http' : 'stdio') : type === 'local' ? 'stdio' : String(type)
-  return portableMcp(source.name, { transport, command, args, url, env, headers }, extra)
+  return portableMcp(copilotMcpConfig(source.name, source.config))
 }
 
 export async function importCopilot(
@@ -62,11 +57,11 @@ export async function importCopilot(
     return { ok: true, message: `Copied skill "${item.name}" to ${tilde(paths.home, copied.path)}.`, undo: { type: 'remove', key: itemKey('skills', copied.path) } }
   }
 
-  const refused = secretRefusal(item, { commandLine: null, teamFile: project !== null })
-  if (refused !== null) return refused
+  const admitted = admitMcp(item, project === null ? COPILOT_PRIVATE_FILE : COPILOT_TEAM_FILE)
+  if (!admitted.ok) return admitted
   const file = ownPlace(paths, 'mcp', project)
   // `tools: ["*"]`: every tool, which is what the server had in the agent it comes from.
-  const config = { ...mcpJson(item, 'local'), tools: ['*'] }
+  const config = { ...mcpJson(admitted.server, 'local'), tools: ['*'] }
   const written = await editJsonFile(
     fs,
     paths.store,

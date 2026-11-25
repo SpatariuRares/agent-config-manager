@@ -3,6 +3,7 @@
 // moved, copied and trashed through the core toolkit.
 import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
 import {
+  admitMcp,
   backUp,
   backupTarget,
   CHANGED,
@@ -21,8 +22,9 @@ import {
   type ProviderDeps
 } from '../toolkit.ts'
 import { parse } from 'smol-toml'
-import { agentDir, codexBackups, codexPaths, destinationDir, copyableServer, readCodex, skillDirs, usableServerName, type CodexRead, type Ref } from './read.ts'
-import type { Json } from '../toolkit.ts'
+import { addableServer, CODEX_ADD } from './mcp-add.ts'
+import { agentDir, codexBackups, codexMcpConfig, codexPaths, destinationDir, readCodex, skillDirs, usableServerName, type CodexRead, type Ref } from './read.ts'
+import type { Admitted, Json } from '../toolkit.ts'
 
 /** `codex mcp add/remove` can take a while on first run; never wait forever. */
 const CLI_TIMEOUT_MS = 60_000
@@ -130,31 +132,27 @@ async function removeServer(deps: ProviderDeps, ref: Ref & { kind: 'mcp' }, vers
   const saved = ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.`
   const message = `Removed MCP server "${ref.name}" with codex mcp remove.${saved}`
   // The undo adds the same server back from the backup, when `codex mcp add` can say everything it had.
-  const why = ran.backup === null ? 'there was no config.toml to back up' : addableServer(ref.name, ref.server)
-  if (why !== null) return { ok: true, message: `${message} No undo: ${why}.` }
+  const why = ran.backup === null ? 'there was no config.toml to back up.' : addableWhy(ref.name, ref.server)
+  if (why !== null) return { ok: true, message: `${message} No undo: ${why}` }
   return { ok: true, message, undo: { type: 'move', key: itemKey('mcp', ran.backup!, ref.name), to: { project: null }, copy: true } }
 }
 
-/** Why `codex mcp add NAME -- COMMAND ARGS` cannot recreate this server exactly, or null when it can. */
-export function addableServer(name: string, server: Json): string | null {
-  const why = copyableServer(server)
-  if (why !== null) return `\`codex mcp add\` cannot recreate it: ${why}`
-  for (const [value, what] of [
-    [name, 'An MCP server name'],
-    [String(server.command), 'An MCP server command']
-  ] as const) {
-    const refused = optionLikeRefusal(value, what)
-    if (refused !== null) return refused.output
-  }
-  return null
+/** Why `codex mcp add` cannot recreate this Codex server exactly (a full sentence), or null when it can. */
+function addableWhy(name: string, server: Json): string | null {
+  const admitted = admitMcp(codexMcpConfig(name, server), CODEX_ADD)
+  return admitted.ok ? addableServer(name, admitted.server.command!) : admitted.message
 }
 
-/** `codex mcp add` for one server; refuses a name already in config.toml, and checks the CLI really added it. */
-export async function addServer(deps: ProviderDeps, name: string, server: Json, versions: Record<string, string>): Promise<{ ok: true; saved: string } | ActionResult> {
+/** `codex mcp add` for one admitted server; refuses a name already in config.toml, and checks the CLI really added it. */
+export async function addServer(
+  deps: ProviderDeps,
+  server: Extract<Admitted, { ok: true }>['server'],
+  versions: Record<string, string>
+): Promise<{ ok: true; saved: string } | ActionResult> {
+  const { name } = server
   if (await serverPresent(deps, name)) return refuse('exists', `~/.codex/config.toml already has a server named "${name}".`)
-  const args = Array.isArray(server.args) ? server.args.map(String) : []
   // Everything after `--` is the server's command line; codex never reads it as options.
-  const ran = await runMcpCli(deps, ['mcp', 'add', name, '--', String(server.command), ...args], versions)
+  const ran = await runMcpCli(deps, ['mcp', 'add', name, '--', server.command!, ...(server.args ?? [])], versions)
   if (!('backup' in ran)) return ran
   if (!(await serverPresent(deps, name))) return refuse('cli-failed', `codex mcp add ran, but "${name}" is not in ~/.codex/config.toml.`)
   return { ok: true, saved: ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.` }
@@ -186,9 +184,12 @@ async function addBackFromBackup(deps: ProviderDeps, action: Action & { type: 'm
     server = undefined
   }
   if (!isObject(server)) return refuse('unknown-backup', `${backup} has no MCP server named "${name}".`)
-  const why = usableServerName(name) ? addableServer(name, server) : `\`codex mcp add\` refuses the name "${name}"`
-  if (why !== null) return refuse('not-movable', `"${name}" cannot be added back: ${why}.`)
-  const added = await addServer(deps, name, server, versions)
+  if (!usableServerName(name)) return refuse('not-movable', `"${name}" cannot be added back: \`codex mcp add\` refuses the name.`)
+  const admitted = admitMcp(codexMcpConfig(name, server), CODEX_ADD)
+  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
+  const optionLike = addableServer(name, admitted.server.command!)
+  if (optionLike !== null) return refuse('not-movable', optionLike)
+  const added = await addServer(deps, admitted.server, versions)
   if (!('saved' in added)) return added
   return {
     ok: true,
@@ -202,11 +203,11 @@ async function copyServer(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind
   if (ref.project === null || action.to.project !== null) return refuse('not-movable', item?.notMovableReason ?? 'Codex MCP servers can only be copied from a project to global.')
   if (!action.copy) return refuse('not-movable', 'This app never rewrites a project .codex/config.toml, so a project server can only be copied to global.')
   if (!item?.movable) return refuse('not-movable', item?.notMovableReason ?? `"${ref.name}" cannot be copied.`)
-  const why = copyableServer(ref.server)
-  if (why !== null) return refuse('not-movable', `"${ref.name}" cannot be copied: ${why}.`)
-  const optionLike = addableServer(ref.name, ref.server)
+  const admitted = admitMcp(codexMcpConfig(ref.name, ref.server), CODEX_ADD)
+  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
+  const optionLike = addableServer(ref.name, admitted.server.command!)
   if (optionLike !== null) return refuse('not-movable', optionLike)
-  const added = await addServer(deps, ref.name, ref.server, versions)
+  const added = await addServer(deps, admitted.server, versions)
   if (!('saved' in added)) return added
   return {
     ok: true,

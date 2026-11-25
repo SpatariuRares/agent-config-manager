@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto'
 import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
 import {
+  admitMcp,
   backUp,
   backupTarget,
   isObject,
@@ -18,12 +19,14 @@ import {
   tilde,
   urlHasSecret,
   versionOf,
+  type Admitted,
   type Clock,
   type Json,
   type ProviderDeps
 } from '../toolkit.ts'
+import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { projectSettings, settingsOf, type GeminiPaths } from './paths.ts'
-import { extensionEnabled, readSetup, rulesFor, stripComments, transportOf, moveRefusal, type Extension, type McpServer, type Setup } from './read.ts'
+import { extensionEnabled, geminiMcpConfig, readSetup, rulesFor, stripComments, type Extension, type McpServer, type Setup } from './read.ts'
 
 type Done = ActionResult & { ok: true }
 type Refused = ActionResult & { ok: false }
@@ -348,18 +351,39 @@ async function removeMcp(ctx: Context, server: McpServer) {
   return done(`Removed ${server.name} from ${ctx.say(server.file)}.`, restoreOf(guarded.backups.get(server.file)))
 }
 
-/** `gemini mcp add` for this server's config; moveRefusal() already proved every key can be passed. */
-function addArgv(server: McpServer, project: string | null): string[] {
-  const { config } = server
-  const transport = transportOf(config)
+type AdmittedServer = Extract<Admitted, { ok: true }>['server']
+
+/**
+ * Argv encoding: env and header entries `gemini mcp add` would change. It splits each -e value at "=" and drops
+ * empty ones, and trims header values; such entries are refused rather than written changed. Null when none.
+ */
+export function argvLimits(server: AdmittedServer): string | null {
+  const env = Object.entries(server.env ?? {}).filter(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value === '' || value.includes('='))
+  if (env.length > 0) {
+    return `"${server.name}" has env entries gemini mcp add cannot write as they are (${env.map(([key]) => key).join(', ')}): it splits each at "=" and drops empty values.`
+  }
+  const headers = Object.entries(server.headers ?? {}).filter(([key, value]) => !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(key) || key.startsWith('-') || value.trim() === '' || value !== value.trim())
+  if (headers.length > 0) {
+    return `"${server.name}" has headers gemini mcp add cannot write as they are (${headers.map(([key]) => key).join(', ')}): it trims values and drops empty ones.`
+  }
+  return null
+}
+
+/**
+ * `gemini mcp add` for an admitted server, a move's or an import's: options first (each takes one value), then
+ * name and command (args after `--`) or url.
+ */
+export function addArgv(server: AdmittedServer, project: string | null): string[] {
+  const { rest } = server
   const options = [
-    ...(typeof config.timeout === 'number' ? [`--timeout=${config.timeout}`] : []),
-    ...(config.trust === true ? ['--trust'] : []),
-    ...(typeof config.description === 'string' && config.description !== '' ? [`--description=${config.description}`] : [])
+    ...(typeof rest.timeout === 'number' ? [`--timeout=${rest.timeout}`] : []),
+    ...(rest.trust === true ? ['--trust'] : []),
+    ...(typeof rest.description === 'string' && rest.description !== '' ? [`--description=${rest.description}`] : [])
   ]
-  const args: string[] = Array.isArray(config.args) ? config.args : []
-  const tail = transport === 'stdio' ? [config.command, ...(args.length > 0 ? ['--', ...args] : [])] : [config.url]
-  return ['mcp', 'add', '--scope', scopeArg(project), '--transport', transport, ...options, server.name, ...tail]
+  const env = Object.entries(server.env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`])
+  const headers = Object.entries(server.headers ?? {}).flatMap(([key, value]) => ['-H', `${key}: ${value}`])
+  const tail = server.transport === 'stdio' ? [server.command!, ...(server.args?.length ? ['--', ...server.args] : [])] : [server.url!]
+  return ['mcp', 'add', '--scope', scopeArg(project), '--transport', server.transport, ...options, ...env, ...headers, server.name, ...tail]
 }
 
 async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { project: string | null; scope?: string }, copy: boolean) {
@@ -370,10 +394,11 @@ async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { proj
     return refuse('refused', 'Gemini CLI has no only-me settings for a project: its .gemini/settings.json is shared. Choose Team.')
   }
   if (destination === server.project) return refuse('same-place', `"${server.name}" is already there.`)
-  const notMovable = moveRefusal(server.config)
-  if (notMovable !== null) return refuse('not-movable', notMovable)
-  const target = transportOf(server.config) === 'stdio' ? server.config.command : server.config.url
-  const optionLike = optionLikeRefusal(String(target), 'The command or url')
+  const admitted = admitMcp(geminiMcpConfig(server.name, server.config), destination === null ? GEMINI_ADD : GEMINI_ADD_TEAM)
+  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
+  const limits = argvLimits(admitted.server)
+  if (limits !== null) return refuse('not-movable', limits)
+  const optionLike = optionLikeRefusal(admitted.server.command ?? admitted.server.url ?? '', 'The command or url')
   if (optionLike) return refuse('refused', optionLike.output)
   const file = settingsOf(ctx.paths, destination)
   const destinationPlace = setup.places.find((p) => p.file === file)
@@ -382,7 +407,7 @@ async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { proj
 
   const guarded = await guard(ctx, copy ? [file] : [file, server.file])
   if (!guarded.ok) return guarded
-  const add = addArgv(server, destination)
+  const add = addArgv(admitted.server, destination)
   const added = await gemini(ctx, add, server.name, destination)
   if (!added.ok) return added
   if (!(await hasServer(ctx, file, server.name))) return unchanged(add, server.name, file, added.output, ctx.say)

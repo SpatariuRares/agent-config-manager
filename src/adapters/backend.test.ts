@@ -256,7 +256,7 @@ test('copying an MCP server to a project team file only adds it, with the projec
   const result = ok(
     await run(deps, { type: 'move', key: mcpKeyOf(SHOP, 'local', 'db'), to: { project: BLOG, scope: 'project' }, copy: true })
   )
-  assert.deepEqual(deps.cli.calls, ['mcp add-json db {"command":"db-server","args":["--port","1"]} --scope project @ /work/blog'])
+  assert.deepEqual(deps.cli.calls, ['mcp add-json db {"type":"stdio","command":"db-server","args":["--port","1"]} --scope project @ /work/blog'])
   assert.deepEqual(result.undo, { type: 'remove', key: mcpKeyOf(BLOG, 'project', 'db') })
 })
 
@@ -279,8 +279,31 @@ test('an MCP server with a secret-looking arg or url is not copied or moved into
   }
   assert.deepEqual(deps.cli.calls, [])
   assert.equal(deps.fs.files['/work/shop/.mcp.json'], json({ mcpServers: { docs: { command: 'docs-server' } } }))
-  // Only-me lives in ~/.claude.json, which is not shared: that copy still goes through.
-  ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'keyed'), to: { project: SHOP, scope: 'local' }, copy: true }))
+  // Only me lives in ~/.claude.json, but add-json takes the whole config on its command line: refused too.
+  assert.equal(failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'keyed'), to: { project: SHOP, scope: 'local' }, copy: true })).reason, 'secret')
+  assert.deepEqual(deps.cli.calls, [])
+})
+
+test('a Claude Code move to only me refuses a literal secret header too: add-json puts the whole config on its command line', async () => {
+  const deps = setup({
+    '/home/.claude.json': JSON.stringify({
+      ...userConfig,
+      mcpServers: {
+        ...userConfig.mcpServers,
+        headed: { type: 'http', url: 'https://api.example/mcp', headers: { Authorization: 'Bearer abc123secret' } },
+        referenced: { type: 'http', url: 'https://api.example/mcp', headers: { Authorization: 'Bearer ${TOKEN}' } }
+      }
+    })
+  })
+  const refusal = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'headed'), to: { project: SHOP, scope: 'local' }, copy: true }))
+  assert.equal(refusal.reason, 'secret')
+  assert.match(refusal.message, /secret-looking values \(headers\.Authorization\)/)
+  assert.doesNotMatch(refusal.message, /abc123secret/)
+  assert.deepEqual(deps.cli.calls, [])
+  ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'referenced'), to: { project: SHOP, scope: 'local' }, copy: true }))
+  assert.deepEqual(deps.cli.calls, [
+    'mcp add-json referenced {"type":"http","url":"https://api.example/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}} --scope local @ /work/shop'
+  ])
 })
 
 test('L-B: an MCP server with literal env or header values is not copied or moved into a project team file; ${VAR} references are', async () => {
@@ -304,8 +327,10 @@ test('L-B: an MCP server with literal env or header values is not copied or move
   assert.deepEqual(deps.cli.calls, [])
   assert.equal(deps.fs.files['/work/shop/.mcp.json'], json({ mcpServers: { docs: { command: 'docs-server' } } }))
   ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'referenced'), to: { project: SHOP, scope: 'project' }, copy: true }))
-  // Only me lives in ~/.claude.json, which is not shared: the literal value may go there.
-  ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'envy'), to: { project: SHOP, scope: 'local' }, copy: true }))
+  // Only me is not shared, but add-json puts the value on its command line: a secret-looking one is refused.
+  const onlyMe = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'envy'), to: { project: SHOP, scope: 'local' }, copy: true }))
+  assert.equal(onlyMe.reason, 'secret')
+  assert.match(onlyMe.message, /secret-looking values \(env\.API_TOKEN\)/)
 })
 
 test('an MCP move whose removal fails reports the partial result honestly', async () => {

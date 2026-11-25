@@ -117,7 +117,7 @@ test('Codex import refuses what `codex mcp add` cannot carry: env, an http serve
   const m = machine()
   const env = await importInto(m.deps, { ...STDIO, env: { DOCS_TOKEN: '${DOCS_TOKEN}' } })
   assert.equal(refused(env).reason, 'not-portable')
-  assert.match(env.message, /cannot carry env/)
+  assert.match(env.message, /cannot take \(env\)/)
   const http = await importInto(m.deps, { kind: 'mcp', name: 'web', transport: 'http', url: 'https://web.example/mcp' })
   assert.equal(refused(http).reason, 'not-portable')
   const secret = await importInto(m.deps, { ...STDIO, args: ['--token', 'sk-live-0123456789abcdef'] })

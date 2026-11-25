@@ -3,7 +3,8 @@
 import { parse } from 'smol-toml'
 import type { Item, Scope } from '../../adapters/view.ts'
 import {
-  argsHaveSecret,
+  admitMcp,
+  describeMcp,
   existingProjects,
   isObject,
   itemKey,
@@ -11,9 +12,7 @@ import {
   readEntryDir,
   readJson,
   readSkills,
-  redactArgs,
   redactCommand,
-  redactUrl,
   sameFolder,
   tilde,
   versionOf,
@@ -22,10 +21,12 @@ import {
   type EntryRef,
   type FileSystem,
   type Json,
+  type McpConfig,
   type ProviderDeps,
   type ProviderView
 } from '../toolkit.ts'
 import { appBackupDir } from '../toolkit.ts'
+import { addableServer, CODEX_ADD } from './mcp-add.ts'
 
 export const CODEX = 'codex'
 
@@ -105,20 +106,14 @@ export const validServerName = (name: string) => /^[A-Za-z0-9_:@/.-]+$/.test(nam
 /** A name this app passes to `codex mcp add/remove`: valid for Codex, and not read as an option (`-x`). */
 export const usableServerName = (name: string) => validServerName(name) && !name.startsWith('-')
 
-/** A stdio server `codex mcp add NAME -- COMMAND ARGS...` recreates exactly: nothing but command and args. */
-export function copyableServer(server: Json): string | null {
-  if (typeof server.command !== 'string') {
-    return 'only stdio servers can be copied: `codex mcp add --url` may start a browser login'
-  }
-  const extra = Object.keys(server).filter((key) => key !== 'command' && key !== 'args')
-  if (extra.length > 0) return `it has settings \`codex mcp add\` cannot carry (${extra.join(', ')})`
-  if (server.args !== undefined && !(Array.isArray(server.args) && server.args.every((arg) => typeof arg === 'string'))) {
-    return 'its args are not a list of strings'
-  }
-  if (argsHaveSecret([server.command, ...(server.args ?? [])])) {
-    return 'its command line holds a secret-looking value, and `codex mcp add` would put it where other programs can read it'
-  }
-  return null
+/**
+ * A Codex [mcp_servers] table as McpConfig: a url makes it streamable http, `http_headers` are its headers, and
+ * `enabled` counts only when it turns the server off (another agent would have it on).
+ */
+export function codexMcpConfig(name: string, server: Json): McpConfig {
+  const { command, args, env, url, http_headers, enabled, ...rest } = server
+  if (enabled !== undefined && enabled !== true) rest.enabled = enabled
+  return { name, transport: typeof url === 'string' ? 'http' : 'stdio', command, args, url, env, headers: http_headers, rest }
 }
 
 /** The parsed TOML file, or null when it is missing or invalid (then a line goes to `problems`). */
@@ -266,20 +261,18 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
     for (const [name, value] of Object.entries(table(place.config.mcp_servers))) {
       if (!isObject(value)) continue
       const key = itemKey('mcp', place.configFile, name)
-      const http = typeof value.url === 'string'
-      const args = Array.isArray(value.args) ? value.args.map(String) : []
-      const target = http ? redactUrl(String(value.url)) : redactArgs([String(value.command ?? ''), ...args]).join(' ').trim()
       const validName = usableServerName(name)
       let movable = false
       let notMovableReason: string
       if (project === null) {
         notMovableReason = '`codex mcp add` only writes ~/.codex/config.toml, and this app never rewrites a project .codex/config.toml.'
       } else {
-        const why = !validName ? '`codex mcp add` refuses its name' : copyableServer(value)
+        const admitted = admitMcp(codexMcpConfig(name, value), CODEX_ADD)
+        const why = !validName ? `\`codex mcp add\` refuses its name.` : admitted.ok ? addableServer(name, admitted.server.command!) : admitted.message
         movable = why === null && !Object.hasOwn(table(config.mcp_servers), name)
         notMovableReason =
           why !== null
-            ? `It cannot be copied to ~/.codex/config.toml: ${why}.`
+            ? `It cannot be copied to ~/.codex/config.toml. ${why}`
             : movable
               ? 'Only a copy to global works: this app never rewrites a project .codex/config.toml.'
               : `~/.codex/config.toml already has a server named "${name}".`
@@ -296,7 +289,7 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
           movable,
           notMovableReason,
           removable: project === null && validName,
-          mcp: { transport: http ? 'http' : 'stdio', target }
+          mcp: describeMcp(codexMcpConfig(name, value))
         },
         { kind: 'mcp', name, file: place.configFile, project, server: value }
       )

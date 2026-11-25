@@ -1,9 +1,9 @@
 // Moves, copies and removes MCP servers. Only through the official CLI: ~/.claude.json is rewritten by
 // Claude Code all the time, so it is read here but never written. Files the CLI changes are backed up first.
-import { isObject, knownProjects, versionOf, type Json } from './inventory.ts'
+import { claudeMcpConfig, isObject, knownProjects, versionOf, type Json } from './inventory.ts'
 import type { FileSystem } from '../../core/ports.ts'
-import { argsHaveSecret, urlHasSecret } from '../../core/redact.ts'
-import { isReference } from '../portable.ts'
+import { admitMcp, commandLine, type Admitted, type Carries, type McpConfig } from '../mcp-policy.ts'
+import { mcpJson } from '../portable.ts'
 import type { ClaudePaths, PluginCli } from './ports.ts'
 import { mcpFile, type Place } from './setup.ts'
 import { backUp, type Clock } from './toggle.ts'
@@ -17,7 +17,7 @@ export type McpResult =
   | { ok: true; backups: string[] }
   | {
       ok: false
-      reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'cli-failed' | 'partial'
+      reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'not-movable' | 'cli-failed' | 'partial'
       message: string
       backups: string[]
     }
@@ -37,7 +37,7 @@ export async function moveMcp(
   copy: boolean,
   clock: Clock
 ): Promise<McpResult> {
-  const refuse = (reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret', message: string): McpResult => ({
+  const refuse = (reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'not-movable', message: string): McpResult => ({
     ok: false,
     reason,
     message,
@@ -47,18 +47,8 @@ export async function moveMcp(
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
     return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
   }
-  if (to.project !== null && to.scope === 'project' && literalEnvOrHeaders(ref.config)) {
-    return refuse(
-      'secret',
-      `"${ref.name}" has literal env or header values. A project .mcp.json is shared with the team: replace them with \${VAR} references first, or choose only me.`
-    )
-  }
-  if (to.project !== null && to.scope === 'project' && commandLineSecret(ref.config)) {
-    return refuse(
-      'secret',
-      `"${ref.name}" has a secret-looking value in its args or url. A project .mcp.json is shared with the team: move the secret into an env value with a \${VAR} reference first, or choose only me.`
-    )
-  }
+  const admitted = admitClaude(claudeMcpConfig(ref.name, ref.config), to)
+  if (!admitted.ok) return refuse(admitted.reason === 'secret' ? 'secret' : 'not-movable', admitted.message)
   const stale = await staleFile(fs, paths, [ref, to], versions)
   if (stale !== null) return refuse('changed', `${stale} changed since it was read. Refresh and try again.`)
   if (Object.hasOwn(await serversAt(fs, paths, to), ref.name)) {
@@ -66,7 +56,7 @@ export async function moveMcp(
   }
 
   const backups = await backUpFiles(fs, paths, copy ? [to] : [to, ref], clock)
-  const added = await cli.mcpAdd(ref.name, JSON.stringify(ref.config), cliScope(to), to.project)
+  const added = await cli.mcpAdd(ref.name, JSON.stringify(claudeJson(admitted.server)), cliScope(to), to.project)
   if (!added.ok) return { ok: false, reason: 'cli-failed', message: added.output, backups }
   if (copy) return { ok: true, backups }
   const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
@@ -90,18 +80,29 @@ export async function removeMcp(
   return { ok: true, backups }
 }
 
-/** True when env or headers hold a value that is not a `${VAR}` reference (the shared rule of every team file). */
-function literalEnvOrHeaders(config: Json): boolean {
-  if (!isObject(config)) return false
-  return ['env', 'headers'].some(
-    (field) => isObject(config[field]) && Object.values(config[field]).some((value) => typeof value !== 'string' || !isReference(value))
-  )
-}
+/**
+ * What `claude mcp add-json` carries, as the McpServerConfigSchema it parses (stdio: command, args, env; sse and
+ * http: url, headers; see "Add MCP servers from JSON configuration", code.claude.com/docs/en/mcp). Claude Code
+ * reads back every key it wrote, so a move keeps the server's other keys (oauth, headersHelper...) as they are.
+ */
+const ADD_JSON: Carries = { transports: ['stdio', 'http', 'sse'], fields: ['args', 'env', 'headers'], keeps: () => true }
+
+/** Every Claude Code MCP write: `claude mcp add-json` takes the whole config on its command line. */
+export const CLAUDE_ADD_JSON = commandLine('`claude mcp add-json`', { team: false, carries: ADD_JSON })
+/** The same command line, writing a project .mcp.json, which the team shares. */
+export const CLAUDE_ADD_JSON_TEAM = commandLine('`claude mcp add-json`', { team: true, carries: ADD_JSON, hint: 'Or choose only me.' })
+
+/** The Destination of a place: a project's team .mcp.json is shared, every other place is private to the user. */
+export const admitClaude = (config: McpConfig, to: Place): Admitted =>
+  admitMcp(config, to.project !== null && to.scope === 'project' ? CLAUDE_ADD_JSON_TEAM : CLAUDE_ADD_JSON)
+
+/** The config `claude mcp add-json` takes for an admitted server: its fields, then the keys Claude Code kept. */
+export const claudeJson = (server: Extract<Admitted, { ok: true }>['server']): Json => ({ ...(mcpJson(server, 'stdio') as object), ...server.rest })
 
 /**
  * Adds a server that comes from another agent ('copyToAgent') with `claude mcp add-json` in `to`: the target file
- * is version checked and backed up first, and a name already there is refused. The caller has applied the secret
- * refusals (add-json takes the whole config on its command line).
+ * is version checked and backed up first, and a name already there is refused. The caller has admitted the
+ * server against admitClaude (add-json takes the whole config on its command line).
  */
 export async function addMcp(
   fs: FileSystem,
@@ -125,13 +126,6 @@ export async function addMcp(
   const added = await cli.mcpAdd(name, JSON.stringify(config), cliScope(to), to.project)
   if (!added.ok) return { ok: false, reason: 'cli-failed', message: added.output, backups }
   return { ok: true, backups }
-}
-
-/** True when the command, args or url hold a value that looks like a credential (the shared redaction rules). */
-function commandLineSecret(config: Json): boolean {
-  if (!isObject(config)) return false
-  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word): word is string => typeof word === 'string')
-  return argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))
 }
 
 /** The first .mcp.json that changed since the view; ~/.claude.json is not checked (Claude Code rewrites it). */

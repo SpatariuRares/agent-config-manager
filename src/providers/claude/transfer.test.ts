@@ -62,7 +62,7 @@ test('Claude export refuses a server with settings another agent cannot take, na
   const m = machine()
   const result = (await m.provider.exportItem!(m.deps, mcpKey(null, 'user', 'authed'))) as ActionResult
   assert.equal(refused(result).reason, 'not-portable')
-  assert.match(result.message, /\(oauth\)/)
+  assert.match(result.message, /\(rest\.oauth\)/)
 })
 
 test('Claude export: a skill as its folder', async () => {

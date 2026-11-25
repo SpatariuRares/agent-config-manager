@@ -74,7 +74,7 @@ test('Copilot export refuses a server with settings another agent cannot take, n
     const result = await provider.exportItem!(deps, itemKey('mcp', MCP, name))
     assert.equal(result.ok, false, name)
     assert.equal(refused(result as ActionResult).reason, 'not-portable')
-    assert.match((result as ActionResult).message, new RegExp(`\\(${field}\\)`))
+    assert.match((result as ActionResult).message, new RegExp(`\\(rest\\.${field}\\)`))
   }
   assert.equal(refused((await provider.exportItem!(deps, itemKey('mcp', MCP, 'gone'))) as ActionResult).reason, 'changed')
 })
@@ -118,7 +118,7 @@ test('Copilot import into a project: team file .github/mcp.json, refusing litera
   const before = structuredClone(fs.files)
   const literal = await importInto(deps, { ...SERVER, env: { DOCS_TOKEN: 'plain' } }, SHOP)
   assert.equal(refused(literal).reason, 'secret')
-  assert.match(literal.message, /literal env or header values \(env DOCS_TOKEN\)/)
+  assert.match(literal.message, /literal env or header values \(env\.DOCS_TOKEN\)/)
   const header = await importInto(deps, { kind: 'mcp', name: 'h', transport: 'http', url: 'https://x.example/mcp', headers: { Authorization: 'Bearer abc' } }, SHOP)
   assert.equal(refused(header).reason, 'secret')
   const args = await importInto(deps, { ...SERVER, args: ['--api-key', 'sk-live-0123456789abcdef'] }, SHOP)

@@ -3,6 +3,7 @@ import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/v
 import { KINDS, type AgentProvider, type ProviderDeps } from '../types.ts'
 import { CLAUDE, claudeAction, claudeView } from './actions.ts'
 import { claudeCliOver } from './cli.ts'
+import { CLAUDE_ADD_JSON, CLAUDE_ADD_JSON_TEAM } from './mcp.ts'
 import { claudePaths, type ClaudeDeps, type ClaudePaths, type PluginCli } from './ports.ts'
 import { exportClaude, importClaude } from './transfer.ts'
 import { checkClaudeUpdates } from './updates.ts'
@@ -51,6 +52,7 @@ export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
   })
   return {
     id: CLAUDE,
+    mcpDestinations: [CLAUDE_ADD_JSON, CLAUDE_ADD_JSON_TEAM],
     async info(deps): Promise<AgentInfo> {
       const { fs, paths } = claude(deps)
       const detected =

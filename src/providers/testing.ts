@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import { fakeFs } from '../core/test-support.ts'
 import type { CliResult, CommandRunner } from '../core/ports.ts'
 import type { Action, ActionResult, ActionType, AgentInfo, Kind, View } from '../adapters/view.ts'
+import { admitMcp } from './mcp-policy.ts'
 import { routeAction, routeView } from './router.ts'
 import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, PORTABLE_KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
 
@@ -216,6 +217,20 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
     const absent = await routeAction(empty, [wrapped], { agent: provider.id, action: { type: 'snapshot' }, versions: {} })
     assert.equal((absent.result as ActionResult & { ok: false }).reason, 'not-detected')
     assert.deepEqual(calls, [])
+  })
+
+  test(`${name}: every MCP destination that is a command line or a team file refuses a literal secret`, async (t) => {
+    const { deps } = machine()
+    const info = await provider.info(deps)
+    if (!(info.imports ?? []).includes('mcp') && !(info.supports.mcp ?? []).includes('move')) return t.skip('writes no MCP servers')
+    const destinations = provider.mcpDestinations ?? []
+    assert.ok(destinations.length > 0, 'it writes MCP servers, so it must expose mcpDestinations')
+    const secret = 'sk-live-0123456789abcdef$x'
+    for (const to of destinations.filter((destination) => destination.team || destination.argv !== null)) {
+      const admitted = admitMcp({ name: 'probe', transport: 'stdio', command: 'npx', env: { TOKEN: secret } }, to)
+      assert.equal(admitted.ok, false, `${to.label} (team: ${to.team}) admitted a literal secret in env`)
+      assert.ok(!admitted.ok && !admitted.message.includes(secret), `${to.label}: the message shows the value`)
+    }
   })
 
   test(`${name}: a write refuses a stale view, then backs the file up before changing it`, async (t) => {

@@ -35,7 +35,7 @@ import type { AgentProvider } from '../types.ts'
 import { COPILOT, copilotPaths, OWNER } from './paths.ts'
 import { readCopilot } from './read.ts'
 import { exportCopilot, importCopilot } from './transfer.ts'
-import { runCopilotAction } from './write.ts'
+import { COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE, runCopilotAction } from './write.ts'
 
 /** What works today, per class. `restore` puts back what a remove or a move changed. */
 export const COPILOT_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
@@ -70,6 +70,7 @@ export const COPILOT_NOTE = [
 export function copilotProvider(): AgentProvider {
   return {
     id: COPILOT,
+    mcpDestinations: [COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE],
     async info({ fs, exec, home }): Promise<AgentInfo> {
       const paths = copilotPaths(home)
       const detected =

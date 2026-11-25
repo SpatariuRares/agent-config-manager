@@ -1,40 +1,11 @@
-// The Portable shapes and the secret rules every import applies, plus copies between the real providers.
+// Copies between the real providers (the MCP server policy itself is tested in ./mcp-policy.test.ts).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Action, ActionResult } from '../adapters/view.ts'
-import { isReference, literalValues, portableMcp, secretRefusal } from './portable.ts'
 import { PROVIDERS } from './registry.ts'
 import { routeAction, routeView } from './router.ts'
 import { fakeExec, fakeFs } from './testing.ts'
-import type { PortableMcp, ProviderDeps } from './types.ts'
-
-test('a ${VAR} reference is not a secret; a literal next to one still is', () => {
-  assert.equal(isReference('${API_KEY}'), true)
-  assert.equal(isReference('Bearer ${TOKEN}'), true)
-  assert.equal(isReference('plain'), false)
-  assert.equal(isReference('$API_KEY'), false)
-  assert.equal(isReference('${A} sk-live-0123456789abcdef'), false)
-})
-
-test('portableMcp refuses settings it cannot carry, and fields of the other transport, rather than dropping them', () => {
-  const cwd = portableMcp('x', { transport: 'stdio', command: 'x' }, ['cwd'])
-  assert.equal(cwd.ok === false && cwd.reason, 'not-portable')
-  const mixed = portableMcp('x', { transport: 'http', url: 'https://x.example', env: { A: 'b' } }, [])
-  assert.match(mixed.ok ? '' : mixed.message, /\(env\)/)
-  const websocket = portableMcp('x', { transport: 'websocket' }, [])
-  assert.equal(websocket.ok, false)
-  assert.deepEqual(portableMcp('x', { transport: 'stdio', command: 'x', args: [], env: {} }, []), { ok: true, item: { kind: 'mcp', name: 'x', transport: 'stdio', command: 'x' } })
-})
-
-test('secretRefusal names fields, never values; a reference passes a command line and a team file', () => {
-  const item: PortableMcp = { kind: 'mcp', name: 's', transport: 'stdio', command: 'x', env: { API_KEY: 'sk-live-0123456789abcdef', LOG: 'info' } }
-  assert.deepEqual(literalValues(item), ['env API_KEY', 'env LOG'])
-  const onCli = secretRefusal(item, { commandLine: 'some-cli', teamFile: false })
-  assert.match(onCli?.message ?? '', /env API_KEY/)
-  assert.doesNotMatch(onCli?.message ?? '', /sk-live|env LOG/)
-  assert.equal(secretRefusal({ ...item, env: { API_KEY: '${API_KEY}' } }, { commandLine: 'some-cli', teamFile: true }), null)
-  assert.equal(secretRefusal(item, { commandLine: null, teamFile: false }), null, 'a user file outside any command line keeps literal values')
-})
+import type { ProviderDeps } from './types.ts'
 
 // ---------- Between the real providers, in one fake home
 
@@ -112,28 +83,6 @@ test('copyToAgent between real providers: an agent that is not installed is refu
 // ---------- A secret inside a longer value never reaches a command line
 
 const GHP = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'
-const SK = 'sk-live-0123456789abcdef'
-
-test('secretRefusal: a secret inside a longer env, header or arg value is refused for a command line; harmless values pass', () => {
-  const stdio = (fields: Partial<PortableMcp>): PortableMcp => ({ kind: 'mcp', name: 's', transport: 'stdio', command: 'x', ...fields })
-  const where = { commandLine: 'some-cli', teamFile: false }
-  for (const item of [
-    stdio({ args: ['mcp-remote', 'https://api.example/mcp', `--header=Authorization: Bearer ${GHP}`] }),
-    stdio({ env: { GH_CONFIG: `token ${GHP}` } }),
-    stdio({ env: { T: `\${X}${GHP}` } }),
-    stdio({ env: { T: `${SK}\${X}` } }),
-    stdio({ env: { CFG: `\${HOME}/${GHP}` } }),
-    stdio({ env: { CREDS: `{"token":"${GHP}"}` } }),
-    { kind: 'mcp', name: 's', transport: 'http', url: 'https://api.example/mcp', headers: { 'X-Custom': `token ${GHP}` } } as PortableMcp
-  ]) {
-    const refused = secretRefusal(item, where)
-    assert.equal(refused?.reason, 'secret', JSON.stringify(item))
-    assert.doesNotMatch(refused?.message ?? '', /ghp_|sk-live/)
-  }
-  assert.equal(isReference(`\${HOME}/${GHP}`), false, 'a token after a reference is not a reference')
-  const harmless = stdio({ args: ['/mcp', '--port=8080', 'node server.js', '${HOME}/bin'], env: { BIN: '${HOME}/bin', TOKEN: '${TOKEN}', AUTH: 'Bearer ${TOKEN}' } })
-  assert.equal(secretRefusal(harmless, where), null)
-})
 
 test('copyToAgent: a Copilot CLI server with a token inside its --header arg is refused by Claude Code, Gemini CLI and Codex; nothing runs', async () => {
   const server = { type: 'local', command: 'npx', args: ['mcp-remote', 'https://api.example/mcp', `--header=Authorization: Bearer ${GHP}`], tools: ['*'] }

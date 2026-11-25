@@ -4,6 +4,7 @@
 // error handling, and the fresh view after every action.
 import type { Clock, CommandRunner, FileSystem, Http } from '../core/ports.ts'
 import type { ActionRequest, ActionResult, ActionType, AgentId, AgentInfo, Kind, Target, UpdatesAnswer, View } from '../adapters/view.ts'
+import type { Destination } from './mcp-policy.ts'
 
 /** What every provider gets on every call. Nothing else touches the machine. */
 export interface ProviderDeps {
@@ -23,6 +24,13 @@ export type ProviderView = Omit<View, 'agents' | 'agent'>
 export interface AgentProvider {
   /** Stable id, e.g. 'codex'. Equal to `info().id`; every Item it returns carries it as `agent`. */
   readonly id: AgentId
+
+  /**
+   * Every Destination (./mcp-policy.ts) this provider writes MCP servers through: one per write path (a CLI that
+   * takes the server on its argv, a team file, a private file). Required when it imports MCP servers or moves
+   * them; providerContract proves each one that is a command line or a team file refuses a literal secret.
+   */
+  readonly mcpDestinations?: readonly Destination[]
 
   /**
    * Who the agent is and what this app can do with it. Must be cheap: only `fs` reads and `exec.find` (PATH),

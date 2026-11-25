@@ -3,7 +3,7 @@ import { isObject, readJson, versionOf, type Json } from '../../core/json.ts'
 import { describe, readAgents, readSkills, sortByName, type Agent, type Skill } from '../../core/markdown.ts'
 import { existingProjects } from '../../core/paths.ts'
 import type { FileSystem } from '../../core/ports.ts'
-import { redactArgs, redactUrl } from '../../core/redact.ts'
+import { describeMcp, type McpConfig } from '../mcp-policy.ts'
 import type { ClaudePaths } from './ports.ts'
 
 export { isObject, readAgents, readSkills, versionOf, type Agent, type Json, type Skill }
@@ -243,20 +243,19 @@ function readMcpServers(userConfig: Json): McpServer[] {
   return mcpServersOf(userConfig.mcpServers).map(({ name, transport, target }) => ({ name, transport, target }))
 }
 
+/** A Claude Code server config as McpConfig: without a `type`, a url means http and a command stdio. */
+export function claudeMcpConfig(name: string, config: Json): McpConfig {
+  const { type, command, args, env, url, headers, ...rest } = isObject(config) ? config : {}
+  const transport = typeof type === 'string' ? type : typeof url === 'string' ? 'http' : 'stdio'
+  return { name, transport, command, args, url, env, headers, rest }
+}
+
 /** The servers of one `mcpServers` map, sorted by name, each with its config as written and a secret-safe target. */
 export function mcpServersOf(map: unknown): (McpServer & { config: Json })[] {
   return sortByName(
     Object.entries(isObject(map) ? map : {})
       .filter((entry): entry is [string, Json] => isObject(entry[1]))
-      .map(([name, server]) => ({
-        name,
-        transport: server.type ?? (server.url ? 'http' : 'stdio'),
-        target:
-          typeof server.url === 'string'
-            ? redactUrl(server.url)
-            : redactArgs([server.command, ...(Array.isArray(server.args) ? server.args : [])].filter(Boolean).map(String)).join(' '),
-        config: server
-      }))
+      .map(([name, server]) => ({ name, ...describeMcp(claudeMcpConfig(name, server)), config: server }))
   )
 }
 

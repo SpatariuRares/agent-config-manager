@@ -1,17 +1,16 @@
 // 'copyToAgent' for Claude Code: MCP servers and skills out to another agent, and in from one.
 // Out: any server or skill the view shows (an export only reads). In: through the same write paths as a move.
 // - An MCP server goes through `claude mcp add-json` (./mcp.ts addMcp): ~/.claude.json is never written here, the
-//   target file is version checked and backed up first. add-json takes the whole config on its command line, so
-//   secret-looking args, url, env or header values are refused in every scope (`${VAR}` references are fine), and
-//   a team .mcp.json takes `${VAR}` references only.
+//   target file is version checked and backed up first. The server is admitted against CLAUDE_ADD_JSON (or its
+//   team twin for a project .mcp.json) by the MCP server policy (../mcp-policy.ts), as a move is.
 // - A skill folder is copied into ~/.claude/skills or <project>/.claude/skills with the toolkit's moveEntry.
 import type { ActionResult, Target } from '../../adapters/view.ts'
 import { moveEntry } from '../../core/entries.ts'
-import { exportSkill, mcpJson, portableMcp, secretRefusal, skillEntry, type Exported, type Portable } from '../toolkit.ts'
+import { exportSkill, portableMcp, skillEntry, type Exported, type Portable } from '../toolkit.ts'
 import { entryKey, mcpKey, read } from './actions.ts'
 import { claudeEntryPlaces } from './entries.ts'
-import { knownProjects } from './inventory.ts'
-import { addMcp } from './mcp.ts'
+import { claudeMcpConfig, knownProjects } from './inventory.ts'
+import { addMcp, admitClaude, claudeJson } from './mcp.ts'
 import type { ClaudeDeps } from './ports.ts'
 import type { Place } from './setup.ts'
 
@@ -22,10 +21,7 @@ export async function exportClaude(deps: ClaudeDeps, key: string): Promise<Expor
   const ref = (await read(deps)).refs.get(key)
   if (ref?.kind === 'entry' && ref.entry.kind === 'skills') return exportSkill(deps.fs, ref.entry.name, ref.entry.entry)
   if (ref?.kind !== 'mcp') return GONE
-  const { name, config } = ref.server
-  const { type, command, args, env, url, headers, ...rest } = config
-  const transport = typeof type === 'string' ? type : typeof url === 'string' ? 'http' : 'stdio'
-  return portableMcp(name, { transport, command, args, url, env, headers }, Object.keys(rest))
+  return portableMcp(claudeMcpConfig(ref.server.name, ref.server.config))
 }
 
 export async function importClaude(deps: ClaudeDeps, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult> {
@@ -43,9 +39,9 @@ export async function importClaude(deps: ClaudeDeps, item: Portable, to: Target,
 
   // Only me stays the default in a project, as for a move (CLAUDE_PROJECT_SCOPES).
   const place: Place = { project, scope: project === null ? 'user' : to.scope === 'project' ? 'project' : 'local' }
-  const secret = secretRefusal(item, { commandLine: '`claude mcp add-json`', teamFile: place.scope === 'project' })
-  if (secret !== null) return secret
-  const added = await addMcp(fs, cli, paths, item.name, mcpJson(item, 'stdio'), place, versions, deps.clock ?? (() => new Date()))
+  const admitted = admitClaude(item, place)
+  if (!admitted.ok) return admitted
+  const added = await addMcp(fs, cli, paths, item.name, claudeJson(admitted.server), place, versions, deps.clock ?? (() => new Date()))
   const where = project === null ? 'global' : `${project} (${place.scope === 'project' ? 'team' : 'only me'})`
   if (!added.ok) {
     const message = added.reason === 'cli-failed' ? `Could not add MCP server "${item.name}" to ${where}: ${added.message.trim()}` : added.message

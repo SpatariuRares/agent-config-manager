@@ -43,5 +43,18 @@ export {
   type ProviderView,
   type Refusal
 } from './types.ts'
-// 'copyToAgent': Portable shapes from an agent's fields, and the secret refusals every import applies.
-export { exportSkill, isReference, literalValues, mcpJson, portableMcp, secretRefusal, skillEntry, type McpFields } from './portable.ts'
+// 'copyToAgent': Portable shapes from an agent's config.
+export { exportSkill, mcpJson, PORTABLE, portableMcp, skillEntry } from './portable.ts'
+// The MCP server policy: whether a server may be written to a destination, and how a view describes it.
+export {
+  admitMcp,
+  commandLine,
+  describeMcp,
+  privateFile,
+  teamFile,
+  type Admitted,
+  type Carries,
+  type Destination,
+  type McpConfig,
+  type Transport
+} from './mcp-policy.ts'
