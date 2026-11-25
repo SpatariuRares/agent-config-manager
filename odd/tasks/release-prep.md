@@ -22,8 +22,8 @@ Branch: feat/release-prep · Tests: `npm test`, `npm run typecheck`, `npm run te
 | --- | --- | --- | --- | --- |
 | T1 | S2 | delegated writer A, parallel with T2 · Risk: item 1 | done (315 tests, 10 green runs) | eee4e78 |
 | T2 | S1 | delegated writer B, parallel with T1 · Risk: item 5 (installs commands into agents) | done (309 tests; nothing installed in real homes) | b140afb |
-| T3 | S3 | delegated writer, after T1 · Risk: item 1 | done; verifier blocker in correction | ff27ce0 |
-| T4 | S4 | inline | todo | |
+| T3 | S3 | delegated writer, after T1 · Risk: item 1 | done; blocker fixed and rechecked | ff27ce0, 590f3f5 |
+| T4 | S4 | inline: current files scrubbed; history rewrite after merge | in progress | 24617d0 |
 | T5 | S5 | inline, after the user's go on history | todo | |
 
 ## Log
@@ -33,3 +33,4 @@ Branch: feat/release-prep · Tests: `npm test`, `npm run typecheck`, `npm run te
 - L3 T2: `agent-config` bin (start, install-commands, uninstall-commands); per-agent files: Claude/Codex/Copilot skills `agent-config/SKILL.md`, Gemini `commands/agent-config.toml`; marked files only, never overwrites. Codex runs skills as `$agent-config`. npm publishing needs a build step (Node does not strip types under node_modules).
 - L4 T1: the flaky test was a real bug: one 100 ms timeout shared by all requests in updates.test.ts failed under load (15/24 parallel runs); fixed at the cause. Gemini `extensions update` has no consent flag in 0.35.3, so it runs with stdin closed and returns the terminal command. Gemini reinstall undo needs `restore.acceptCommand` (moved into T3).
 - L5 T3 (ff27ce0): copyToAgent for MCP and skills across the four providers, plus Gemini reinstall undo (approved command only), Claude team-file env/header refusal, agent-config hints; 374 unit + 53 panel tests. Verifier: one blocker, a secret inside a longer value (`Bearer ghp_…`, `token ghp_…`, `${X}ghp_…`, JSON) passed `argsHaveSecret` and reached CLI command lines; same root cause as a pre-existing Copilot view leak. Also: a cross-agent undo used fresh target versions, so it could remove a server the user edited after the copy; displayed commands were not shell-quoted; Gemini's skill hint used the SKILL.md name. One correction batch running.
+- L6 Correction 590f3f5: redact.ts scans every word of a value (headers, Bearer, JSON, ${VAR}-prefixed); cross-agent undo carries `undoVersions`; displayed commands shell-quoted. Recheck: blocker and undo fixed. README updated. PR #6 feat/release-prep → main (merges cleanly). 386 unit + 54 panel tests.
