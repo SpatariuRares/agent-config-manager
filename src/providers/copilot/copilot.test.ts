@@ -193,6 +193,47 @@ test('a write refuses a stale view: nothing is written, not even half a move', a
   assert.deepEqual(fs.files, before)
 })
 
+test('an MCP move whose remove write throws is partial, names the backups, and a restore puts the destination back', async () => {
+  const { deps, fs } = machine()
+  const TEAM = `${SHOP}/.github/mcp.json`
+  const writeText = fs.writeText.bind(fs)
+  fs.writeText = async (path, text) => {
+    if (path === MCP) throw Object.assign(new Error(`EACCES: permission denied, open '${MCP}'`), { code: 'EACCES' })
+    return writeText(path, text)
+  }
+  const moved = await run(deps, { type: 'move', key: mcpKey(MCP, 'context7'), to: { project: SHOP, scope: 'project' }, copy: false })
+  assert.equal(!moved.ok && moved.reason, 'partial')
+  const { backups } = await viewOf(deps)
+  const backupOf = (file: string) => backups.find((backup) => backup.target === file)!.name
+  assert.ok(moved.message.includes(backupOf(TEAM)) && moved.message.includes(backupOf(MCP)), moved.message)
+  assert.equal(fs.files[MCP], FILES[MCP])
+  assert.notEqual(fs.files[TEAM], FILES[TEAM])
+  deps.clock = () => new Date('2026-11-24T11:00:00.000Z')
+  const restored = await run(deps, { type: 'restore', name: backupOf(TEAM) })
+  assert.equal(restored.ok, true, restored.message)
+  assert.equal(fs.files[TEAM], FILES[TEAM])
+})
+
+test('a skill or agent move or remove refuses as changed when its file changed since the view, and changes nothing', async () => {
+  const { deps, fs } = machine()
+  const view = await viewOf(deps)
+  fs.files[`${DIR}/skills/review/SKILL.md`] += 'edited meanwhile\n'
+  fs.files[`${DIR}/agents/planner.agent.md`] += 'edited meanwhile\n'
+  const before = structuredClone(fs.files)
+  const skill = itemKey('skills', `${DIR}/skills/review`)
+  const agent = itemKey('agents', `${DIR}/agents/planner.agent.md`)
+  for (const action of [
+    { type: 'move', key: skill, to: { project: SHOP }, copy: false },
+    { type: 'move', key: agent, to: { project: SHOP }, copy: true },
+    { type: 'remove', key: skill },
+    { type: 'remove', key: agent }
+  ] satisfies Action[]) {
+    const result = await run(deps, action, view.versions)
+    assert.equal(!result.ok && result.reason, 'changed', JSON.stringify(action))
+  }
+  assert.deepEqual(fs.files, before)
+})
+
 test('secrets in env, headers, args, URLs and hooks never appear in the view', async () => {
   const secrets = ['ghp_ENVSECRET1234', 'HEADERSECRET5678', 'ARGSECRET9012', 'URLSECRET3456', 'HOOKSECRET7890', 'HOOKENV1234', 'BAREghp']
   const { deps } = machine({

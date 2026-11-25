@@ -211,6 +211,24 @@ test('a relative-link skill is refused for move', async () => {
   assert.deepEqual(deps.fs.links, { '/home/.claude/skills/rel': '../rel' })
 })
 
+test('a skill or agent move or remove refuses as changed when its file changed since the view, and changes nothing', async () => {
+  const deps = setup()
+  const versions = (await view(deps)).versions
+  deps.fs.files[`${REVIEW}/SKILL.md`] += 'edited meanwhile\n'
+  deps.fs.files['/home/.claude/agents/helper.md'] += 'edited meanwhile\n'
+  const before = { ...deps.fs.files }
+  const helper = itemKey('agents', '/home/.claude/agents/helper.md')
+  for (const action of [
+    { type: 'move', key: REVIEW_KEY, to: { project: SHOP }, copy: false },
+    { type: 'move', key: helper, to: { project: BLOG }, copy: true },
+    { type: 'remove', key: REVIEW_KEY },
+    { type: 'remove', key: helper }
+  ] satisfies Action[]) {
+    assert.equal(failed(await run(deps, action, versions)).reason, 'changed', JSON.stringify(action))
+  }
+  assert.deepEqual(deps.fs.files, before)
+})
+
 test('removing a skill puts it in a restorable trash listed with the backups', async () => {
   const deps = setup()
   const answer = await run(deps, { type: 'remove', key: REVIEW_KEY })
@@ -456,7 +474,66 @@ test('a hook change refuses when a file changed since the view, and writes nothi
   assert.deepEqual(deps.fs.files, before)
 })
 
+test('a hook move whose second write throws is partial, names both backups, and a restore puts the destination back', async () => {
+  const deps = setup({ [SHOP_LOCAL]: json({ model: 'x' }) })
+  const writeText = deps.fs.writeText.bind(deps.fs)
+  deps.fs.writeText = async (path, text) => {
+    if (path === USER) throw Object.assign(new Error(`EACCES: permission denied, open '${USER}'`), { code: 'EACCES' })
+    return writeText(path, text)
+  }
+  const result = failed(
+    await run(deps, { type: 'move', key: hookKeyOf(USER, 'PreToolUse', 'Bash', 'echo user'), to: { project: SHOP, scope: 'local' }, copy: false })
+  )
+  const name = (file: string) => backupOf(file).slice(BACKUPS.length + 1)
+  assert.equal(result.reason, 'partial')
+  assert.ok(result.message.includes(name(SHOP_LOCAL)) && result.message.includes(name(USER)), result.message)
+  assert.equal(deps.fs.files[USER], json(userSettings))
+  assert.notEqual(deps.fs.files[SHOP_LOCAL], json({ model: 'x' }))
+  deps.clock = () => new Date('2026-11-24T11:00:00.000Z')
+  ok(await run(deps, { type: 'restore', name: name(SHOP_LOCAL) }))
+  assert.equal(deps.fs.files[SHOP_LOCAL], json({ model: 'x' }))
+})
+
 // ---- plugins (S5)
+
+test('a plugin move checks every file it touches before writing: a stale one refuses it as changed and nothing is written', async () => {
+  const deps = setup()
+  const versions = (await view(deps)).versions
+  deps.fs.files[USER] = json({ ...userSettings, model: 'edited meanwhile' })
+  deps.fs.files[SHOP_TEAM] = json({ ...shopTeam, model: 'edited meanwhile' })
+  const before = { ...deps.fs.files }
+  // Global to a project: the project file is fresh, settings.json (cleared second) is stale.
+  assert.equal(failed(await run(deps, { type: 'move', key: userKey('a@m'), to: { project: BLOG }, copy: false }, versions)).reason, 'changed')
+  // A project override to global: settings.json (written first) is stale.
+  assert.equal(failed(await run(deps, { type: 'move', key: overrideKey(SHOP, 'project', 'b@m'), to: { project: null }, copy: false }, versions)).reason, 'changed')
+  assert.deepEqual(deps.fs.files, before)
+})
+
+test('a plugin move backs up both files before writing either', async () => {
+  const deps = setup()
+  const order: string[] = []
+  const writeText = deps.fs.writeText.bind(deps.fs)
+  deps.fs.writeText = async (path, text) => {
+    order.push(path)
+    return writeText(path, text)
+  }
+  ok(await run(deps, { type: 'move', key: overrideKey(SHOP, 'project', 'b@m'), to: { project: null }, copy: false }))
+  assert.deepEqual(order, [backupOf(USER), backupOf(SHOP_TEAM), USER, SHOP_TEAM])
+})
+
+test('a plugin move whose second write throws is partial and names the backups', async () => {
+  const deps = setup()
+  const writeText = deps.fs.writeText.bind(deps.fs)
+  deps.fs.writeText = async (path, text) => {
+    if (path === USER) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+    return writeText(path, text)
+  }
+  const result = failed(await run(deps, { type: 'move', key: userKey('a@m'), to: { project: BLOG }, copy: false }))
+  assert.equal(result.reason, 'partial')
+  assert.match(result.message, /ENOSPC: no space left on device/)
+  assert.ok(result.message.includes(backupOf(USER).slice(BACKUPS.length + 1)), result.message)
+  assert.deepEqual(JSON.parse(deps.fs.files[BLOG_LOCAL]), { enabledPlugins: { 'a@m': true } })
+})
 
 test('moving a global plugin to a project turns it on there (only me) and off globally', async () => {
   const deps = setup()

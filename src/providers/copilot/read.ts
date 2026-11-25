@@ -30,7 +30,8 @@ import { COPILOT, placesOf, type CopilotPaths, type Place } from './paths.ts'
  * ref, read-only places included (an export only reads); a write refuses an item that is not movable as read-only.
  */
 export type Ref =
-  | { kind: 'skills' | 'agents'; project: string | null; entry: EntryRef }
+  /** `file` is the SKILL.md or agent file, whose version guards a move or remove. */
+  | { kind: 'skills' | 'agents'; project: string | null; entry: EntryRef; file: string }
   | { kind: 'mcp'; project: string | null; file: string; name: string; config: Json }
 
 export interface Inventory {
@@ -81,8 +82,10 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
       for (const place of placesOf(paths, kind, project)) {
         if (!(await firstVisit(place.path))) continue
         for (const entry of await readEntryDir(fs, kind, place.path, kind === 'skills' ? readSkills : readAgentFiles)) {
+          // The SKILL.md or agent file: a move or remove refuses when it changed since the view.
+          versions[entry.path] = versionOf(await fs.readText(entry.path))
           const key = itemKey(kind, entry.entry)
-          add({ ...base(kind, key, entry.name, project, entry.path, place), description: entry.description }, { kind, project, entry })
+          add({ ...base(kind, key, entry.name, project, entry.path, place), description: entry.description }, { kind, project, entry, file: entry.path })
         }
       }
     }

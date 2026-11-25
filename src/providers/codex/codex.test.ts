@@ -395,6 +395,16 @@ test('MCP: a move that is not a copy, an uncopyable server and a user server nev
   assert.deepEqual(m.writes, [])
 })
 
+test('MCP copy refuses when the project config.toml it copies from changed since the view: no backup, no CLI', async () => {
+  const m = machine()
+  const view = await viewOf(m.deps)
+  m.fs.files[`${SHOP}/.codex/config.toml`] = m.fs.files[`${SHOP}/.codex/config.toml`].replace('"--readonly"', '"--write"')
+  const answer = await act(m.deps, view, { type: 'move', key: named(view, 'mcp', 'shop-db', SHOP).key, to: { project: null }, copy: true })
+  assert.equal((answer.result as ActionResult & { ok: false }).reason, 'changed')
+  assert.deepEqual(m.exec.calls, [])
+  assert.deepEqual(m.writes, [])
+})
+
 test('MCP remove refuses a stale view: no backup, no CLI', async () => {
   const m = machine()
   const view = await viewOf(m.deps)

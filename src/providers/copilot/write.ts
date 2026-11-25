@@ -20,6 +20,7 @@ import {
   teamFile,
   tilde,
   trashEntry,
+  versionRefusal,
   type BackupPlan,
   type Carries,
   type ChangeDeps,
@@ -78,6 +79,11 @@ export async function runCopilotAction(deps: ProviderDeps, paths: CopilotPaths, 
   const found = index.lookup(item.key)
   if (!found.ok || !item.movable) return fail('not-movable', `"${item.name}" is read-only here. ${item.notMovableReason ?? ''}`.trim())
   const { ref } = found
+  // A skill or agent: its SKILL.md or agent file must still be what the view showed (an MCP write checks its file).
+  if (ref.kind !== 'mcp') {
+    const stale = await versionRefusal(changeDeps(deps, paths), [ref.file], versions)
+    if (stale !== null) return stale
+  }
 
   if (action.type === 'remove') {
     if (ref.kind === 'mcp') return removeServer(changeDeps(deps, paths), paths, ref, versions)

@@ -211,6 +211,52 @@ test('a second JSON step that refuses is partial too, and the first edit stays',
   assert.equal(JSON.parse(fs.files[A]).x, 1)
 })
 
+/** Makes every write of `file` throw, as a full disk or a read-only file would. */
+function failWrites(fs: ReturnType<typeof fakeFs>, file: string) {
+  const writeText = fs.writeText.bind(fs)
+  fs.writeText = async (path, text) => {
+    if (path === file) throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' })
+    return writeText(path, text)
+  }
+}
+
+test('a second step that throws (no permission, a full disk) is partial, names the backups, and the first edit stays', async () => {
+  const files = { [A]: '{}', [B]: '{}' }
+  const { fs, deps } = machine(files)
+  failWrites(fs, B)
+  const result = refusal(
+    await guardedChange(deps, {
+      files: [A, B],
+      versions: versions(files),
+      steps: [{ effect: { kind: 'json', file: A, edit: (json) => void (json.x = 1) } }, { effect: { kind: 'json', file: B, edit: (json) => void (json.y = 1) } }]
+    })
+  )
+  assert.equal(result.reason, 'partial')
+  assert.equal(
+    result.message,
+    `the edit of ~/.agent/a.json worked; then the edit of ~/.agent/b.json failed: EACCES: permission denied. The backups made first can put the files back: ${encodeURIComponent(A)}.${STAMP}.json, ${encodeURIComponent(B)}.${STAMP}.json.`
+  )
+  assert.equal(JSON.parse(fs.files[A]).x, 1)
+  assert.equal(fs.files[B], '{}')
+})
+
+test('a first step that throws is refused as write-failed: nothing is written but the backups', async () => {
+  const files = { [A]: '{}', [B]: '{}' }
+  const { fs, deps, exec } = machine(files)
+  failWrites(fs, A)
+  const result = refusal(
+    await guardedChange(deps, {
+      files: [A, B],
+      versions: versions(files),
+      steps: [{ effect: { kind: 'json', file: A, edit: (json) => void (json.x = 1) } }, { effect: { kind: 'cli', command: 'agent', argv: ['mcp', 'remove', 'x'], cwd: null } }]
+    })
+  )
+  assert.equal(result.reason, 'write-failed')
+  assert.equal(result.message, 'the edit of ~/.agent/a.json failed: EACCES: permission denied. Nothing was changed.')
+  assert.deepEqual(exec.calls, [])
+  assert.deepEqual(fs.files, { ...files, [backupOf(A)]: '{}', [backupOf(B)]: '{}' })
+})
+
 test('restoreOf names a backup by its file name, and nothing without one', () => {
   assert.deepEqual(restoreOf('/b/x.json'), { type: 'restore', name: 'x.json' })
   assert.equal(restoreOf(undefined), undefined)

@@ -56,7 +56,7 @@ export interface AgentProvider {
 
 | Need | Use |
 | --- | --- |
-| Change files safely: version check of every file touched, backup first, then a JSON edit (2-space format kept) or the agent's CLI by argv, then a re-read that proves the change is there; one wording per refusal (`changed`, `cli-failed`, `did-not-change`, `partial`) | `guardedChange` (`src/core/guarded-change.ts`), and `restoreOf` for the undo |
+| Change files safely: version check of every file touched, backup first, then a JSON edit (2-space format kept) or the agent's CLI by argv, then a re-read that proves the change is there; one wording per refusal (`changed`, `write-failed`, `cli-failed`, `did-not-change`, `partial`) | `guardedChange` (`src/core/guarded-change.ts`), and `restoreOf` for the undo |
 | Refuse a stale view before an effect that is no file edit (moving a skill folder) | `versionRefusal` |
 | Restore, snapshot and put back from the trash | declare a `BackupPlan` in `backups()`: your `BackupStore` (at `appBackupDir(home, '<id>')`), the files this app writes for the agent, and its entry folders (`src/providers/backup-actions.ts`) |
 | Move, copy or trash a skill folder or agent file | `moveEntry`, `trashEntry` |

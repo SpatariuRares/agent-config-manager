@@ -7,8 +7,9 @@
 //      the CommandRunner port (never a shell);
 //   4. the optional post-condition reads the files again and says whether the intended change is there, which
 //      catches a CLI that exits 0 and did nothing (`did-not-change`);
-//   5. a second step (a move: add, then remove) runs only after the first worked; if it fails the change is
-//      `partial`, and the message names the backups that put the files back.
+//   5. a second step (a move: add, then remove) runs only after the first worked; if it fails, refuses or throws
+//      (no permission, a full disk), the change is `partial`, and the message names the backups that put the files
+//      back. A first step that throws is `write-failed`: nothing was written but the backups.
 // Its only dependencies are the FileSystem and CommandRunner ports, so it is tested through this interface with
 // fakeFs and fakeExec. Each refusal has one wording, here.
 import { backUp, type BackupStore } from './backups.ts'
@@ -54,9 +55,13 @@ export interface Change {
   /** The view's versions (versionOf of each file it read; missing or '' = the file was missing). */
   versions: Readonly<Record<string, string>>
   /**
-   * Files backed up but never version checked. Only for a file the agent itself rewrites all the time, so a
-   * version from the view is always stale and the check would refuse every change (Claude Code's ~/.claude.json,
-   * which only its CLI writes here).
+   * Files backed up but never version checked. The rule: a file this app never edits itself, only the agent's own
+   * CLI (a cli step) changes it, and the backup is there for the undo, not to guard an edit of ours; a version
+   * check would refuse for no reason. Two uses today:
+   * - Claude Code's ~/.claude.json, which Claude Code rewrites all the time, so a version from the view is always
+   *   stale and the check would refuse every change;
+   * - Gemini CLI's extension install record (.gemini-extension-install.json), which the view never versions:
+   *   `gemini extensions uninstall` deletes it, and the backup is what the undo reinstalls from.
    */
   unversioned?: readonly string[]
   /** One effect, or two: the second runs only after the first worked. */
@@ -64,7 +69,7 @@ export interface Change {
 }
 
 export type ChangeRefusal =
-  | { ok: false; reason: 'changed' | 'unreadable' | 'refused' | 'did-not-change' | 'partial'; message: string }
+  | { ok: false; reason: 'changed' | 'unreadable' | 'refused' | 'did-not-change' | 'partial' | 'write-failed'; message: string }
   /**
    * `output` is the CLI's whole output, redacted, for the caller to read (a consent question, say). It is not
    * enumerable, so a refusal passed on as an ActionResult never carries it to the panel: the message has its tail.
@@ -127,25 +132,45 @@ export async function guardedChange(deps: ChangeDeps, change: Change): Promise<C
     if (previous !== null) backups.set(file, await backUp(fs, deps.store, file, previous, deps.clock))
   }
 
+  const names = [...backups.values()].map((path) => path.slice(path.lastIndexOf('/') + 1))
+  const put = names.length > 0 ? ` The backups made first can put the files back: ${names.join(', ')}.` : ''
   const done = await apply(deps, first, prepared)
-  if (!done.ok) return done.refusal
+  if (!done.ok) {
+    if (done.refusal.reason !== 'write-failed') return done.refusal
+    // A throw after the effect (reading the file back) may leave the first file changed: then the backups matter.
+    return { ok: false, reason: 'write-failed', message: `${done.why}.${done.effected ? put : ' Nothing was changed.'}` }
+  }
   let output = done.output
   if (second !== undefined) {
     const next = await apply(deps, second, null)
-    if (!next.ok) {
-      const names = [...backups.values()].map((path) => path.slice(path.lastIndexOf('/') + 1))
-      const put = names.length > 0 ? ` The backups made first can put the files back: ${names.join(', ')}.` : ''
-      return { ok: false, reason: 'partial', message: `${label(first, say)} worked; then ${next.why}.${put}` }
-    }
+    if (!next.ok) return { ok: false, reason: 'partial', message: `${label(first, say)} worked; then ${next.why}.${put}` }
     output = next.output
   }
   return { ok: true, backups, output, restore: (file) => restoreOf(backups.get(file)) }
 }
 
-type Applied = { ok: true; output: string } | { ok: false; refusal: ChangeRefusal; why: string }
+type Applied = { ok: true; output: string } | { ok: false; refusal: ChangeRefusal; why: string; effected?: boolean }
 
-/** Runs one step's effect, then its post-condition. `prepared` is the first JSON edit, already made. */
+/**
+ * Runs one step's effect, then its post-condition. `prepared` is the first JSON edit, already made. Never throws:
+ * a thrown write, run or read becomes a `write-failed` refusal, so a second step that throws is `partial`, not an
+ * unexplained error after the first file was already written. `effected` says whether the effect itself finished.
+ */
 async function apply(deps: ChangeDeps, step: Step, prepared: Edited | null): Promise<Applied> {
+  const say = deps.say ?? ((path: string) => path)
+  let effected = false
+  try {
+    return await run(deps, step, prepared, () => void (effected = true))
+  } catch (error) {
+    const why =
+      effected && step.check
+        ? `${label(step, say)} ran, but reading ${say(step.check.file)} back failed: ${thrown(error)}`
+        : `${label(step, say)} failed: ${thrown(error)}`
+    return { ok: false, refusal: { ok: false, reason: 'write-failed', message: `${why}.` }, why, effected }
+  }
+}
+
+async function run(deps: ChangeDeps, step: Step, prepared: Edited | null, effected: () => void): Promise<Applied> {
   const { fs } = deps
   const say = deps.say ?? ((path: string) => path)
   const { effect } = step
@@ -167,6 +192,7 @@ async function apply(deps: ChangeDeps, step: Step, prepared: Edited | null): Pro
     if (!edited.ok) return { ok: false, refusal: edited, why: `${name} was refused: ${edited.message.replace(/\.$/, '')}` }
     if (edited.text !== null) await fs.writeText(effect.file, edited.text)
   }
+  effected()
   if (step.check !== undefined && !(await step.check.holds(fs, output))) {
     const why = `${name} exited without an error, but ${say(step.check.file)} does not show the change: ${tail(output)}`
     return { ok: false, refusal: { ok: false, reason: 'did-not-change', message: `${why}.${hint}` }, why }
@@ -206,6 +232,12 @@ function label(step: Step, say: (path: string) => string): string {
   const { effect } = step
   if (effect.kind !== 'cli') return `the edit of ${say(effect.file)}`
   return `${[effect.command, ...effect.argv.slice(0, 2)].join(' ')}${step.about ? ` for ${step.about}` : ''}`
+}
+
+/** A thrown error, for a message: the errno part of a Node error (`EACCES: permission denied`), redacted. */
+function thrown(error: unknown): string {
+  const text = (error instanceof Error ? error.message : String(error)).split('\n')[0]
+  return redactCommand(/^E[A-Z]+: [^,]*/.exec(text)?.[0] ?? text).slice(0, 200) || 'an unknown error'
 }
 
 /** The last lines of a CLI's output, for a message, with anything secret-looking redacted. */

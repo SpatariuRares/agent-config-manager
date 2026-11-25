@@ -224,6 +224,10 @@ async function copyServer(deps: ProviderDeps, item: Item, ref: Ref & { kind: 'mc
   if (ref.project === null || action.to.project !== null) return refuse('not-movable', item.notMovableReason ?? 'Codex MCP servers can only be copied from a project to global.')
   if (!action.copy) return refuse('not-movable', 'This app never rewrites a project .codex/config.toml, so a project server can only be copied to global.')
   if (!item.movable) return refuse('not-movable', item.notMovableReason ?? `"${ref.name}" cannot be copied.`)
+  // The project file is only read, but what it holds now is what `codex mcp add` writes globally: it must still be
+  // the server the user saw (addServer checks ~/.codex/config.toml, the file the CLI writes).
+  const stale = await versionRefusal(changeDeps(deps), [ref.file], versions)
+  if (stale !== null) return stale
   const admitted = admitMcp(codexMcpConfig(ref.name, ref.server), CODEX_ADD)
   if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
   const optionLike = addableServer(ref.name, admitted.server.command!)

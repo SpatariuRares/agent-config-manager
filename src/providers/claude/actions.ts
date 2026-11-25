@@ -11,6 +11,7 @@ import {
   redactCommand,
   restoreOf,
   trashEntry,
+  versionRefusal,
   type Clock,
   type EntryPlaces,
   type FileSystem,
@@ -154,6 +155,8 @@ async function perform(deps: ProviderDeps, request: ActionRequest): Promise<Outc
       }
       if (action.type === 'clearOverride') return refuse('unsupported', 'Only a plugin override can be cleared.')
       if (ref.kind === 'entry') {
+        const stale = await versionRefusal({ fs }, [ref.entry.path], versions)
+        if (stale !== null) return refuse(stale.reason, stale.message)
         const trashed = await trashEntry(fs, claudeBackups(paths), ref.entry.entry, clock)
         if (!trashed.ok) return refuse(trashed.reason, trashed.message)
         return done(`Removed ${named} from ${from}. It is in the backups list if you need it back.`, { type: 'restore', name: trashed.name })
@@ -213,6 +216,9 @@ async function move(
   const message = `${verb} ${named} from ${fromLabel} to ${toLabel}.`
 
   if (ref.kind === 'entry') {
+    // Like Codex: the SKILL.md or agent file must still be what the view showed.
+    const stale = await versionRefusal({ fs }, [ref.entry.path], versions)
+    if (stale !== null) return refuse(stale.reason, stale.message)
     const moved = await moveEntry(fs, entryPlaces(fs, paths), ref.entry, to.project, copy)
     if (!moved.ok) return refuse(moved.reason, moved.message)
     const key = entryKey(ref.entry.kind, moved.path)
@@ -241,11 +247,8 @@ async function move(
     { id: ref.id, from: { project: ref.project, scope: ref.scope }, to, enabled, copy, versions },
     clock
   )
-  if (!moved.ok) {
-    if (!moved.partial) return refuse(moved.reason, moved.message)
-    const origin = ref.project === null ? 'turning it off globally' : `clearing it in ${fromLabel}`
-    return refuse('partial', `Set ${named} ${enabled ? 'on' : 'off'} in ${toLabel}, but ${origin} failed: ${moved.message}`)
-  }
+  // A partial move's message already says which write worked, which failed, and the backups that put them back.
+  if (!moved.ok) return refuse(moved.reason, moved.message)
   const newKey = pluginKey(to.project, to.scope, ref.id)
   const outcome = done(message, pluginUndo(before, ref, to, copy, newKey, back))
   return to.project === null ? outcome : { ...outcome, check: { id: ref.id, project: to.project, scope: to.scope as ProjectScope, enabled } }
