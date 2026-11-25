@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "See and manage your Claude Code setup: plugins, skills, agents, MCP servers and hooks.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "agent-config": "bin/agent-config.js"
