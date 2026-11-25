@@ -7,6 +7,15 @@ See plugins, skills, agents, MCP servers and hooks for each agent in one place. 
 It runs as a small web app on `localhost` with nothing but Node, so it works next to any agent or
 editor. The same panel also loads as an [Orca](https://github.com/stablyai/orca) sidebar plugin.
 
+## Screenshots
+
+<table>
+<tr><td valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png"><img src="docs/screenshots/overview-light.png" alt="Plugins of Claude Code split into Global and projects, with updates checked" width="400"></picture><br><sub>Every plugin, global and per project, with updates checked</sub></td><td valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/copy-to-agent-dark.png"><img src="docs/screenshots/copy-to-agent-light.png" alt="Copying an MCP server from Claude Code to Gemini CLI" width="400"></picture><br><sub>Copy an MCP server or skill to another agent</sub></td></tr>
+<tr><td valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/agents-dark.png"><img src="docs/screenshots/agents-light.png" alt="Agent switcher: Claude Code, Codex, Gemini CLI, Copilot CLI" width="400"></picture><br><sub>One agent at a time</sub></td><td valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/drag-dark.png"><img src="docs/screenshots/drag-light.png" alt="Dragging a hook onto a project; hold Option to copy instead of move" width="400"></picture><br><sub>Drag an item onto a project to move it; hold ⌥ to copy</sub></td></tr>
+</table>
+
+The screenshots use made-up sample data (`index.html?fixture`); regenerate them with `README_SHOTS=1 npx playwright test readme-shots`.
+
 ## Run it
 
 Requires Node 23.6+ (it runs TypeScript directly) and the `claude` CLI on your PATH. It is not on
