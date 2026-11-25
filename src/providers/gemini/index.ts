@@ -40,7 +40,8 @@
 // - Never read: ~/.gemini/.env, oauth_creds.json, google_accounts.json, history/, logs/, extension .env files.
 import type { ActionType, AgentInfo, Item, Kind, ProjectScope } from '../../adapters/view.ts'
 import { KINDS, type AgentProvider } from '../types.ts'
-import { geminiAction } from './actions.ts'
+import { geminiAction, geminiBackups } from './actions.ts'
+import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { geminiPaths } from './paths.ts'
 import { GEMINI, readSetup, type Setup } from './read.ts'
 import { exportGemini, importGemini } from './transfer.ts'
@@ -65,10 +66,10 @@ export const GEMINI_EXPORTS: Kind[] = ['skills', 'mcp']
 export const GEMINI_IMPORTS: Kind[] = ['skills', 'mcp']
 
 /** An MCP item carries its switch: off when `gemini mcp disable` turned it off (mcp-server-enablement.json). */
-function withSwitches({ view, refs }: Setup) {
+function withSwitches({ view, index }: Setup) {
   const items = view.items.map((item): Item => {
-    const ref = refs.get(item.key)
-    return ref?.kind === 'mcp' ? { ...item, enabled: ref.enabled } : item
+    const found = index.lookup(item.key)
+    return found.ok && found.ref.kind === 'mcp' ? { ...item, enabled: found.ref.enabled } : item
   })
   return { ...view, items }
 }
@@ -77,11 +78,12 @@ const NOTE =
   'Skills, agents and hooks are read-only here: this app does not move or remove them for Gemini CLI. ' +
   'A skill copied in from another agent goes to ~/.gemini/skills or <project>/.gemini/skills; remove it with gemini skills uninstall. ' +
   'Install extensions with gemini extensions install; updates are not checked ahead, since Gemini CLI has no read-only check. ' +
-  'MCP servers with env values or headers do not move, so no secret lands on a command line; one copied in from another agent may carry them only as ${VAR} references or values that look like no secret.'
+  'An MCP server moved or copied in carries env values and headers only as ${VAR} references or values that look like no secret (they go on the gemini mcp add command line), and references only into a project.'
 
 export function geminiProvider(): AgentProvider {
   return {
     id: GEMINI,
+    mcpDestinations: [GEMINI_ADD, GEMINI_ADD_TEAM],
     async info(deps): Promise<AgentInfo> {
       const paths = geminiPaths(deps.home)
       const detected = (await deps.exec.find('gemini')) !== null || (await deps.fs.realPath(paths.dir)) !== null
@@ -100,6 +102,7 @@ export function geminiProvider(): AgentProvider {
     },
     buildView: async (deps) => withSwitches(await readSetup(deps.fs, geminiPaths(deps.home))),
     runAction: (deps, request) => geminiAction(deps, geminiPaths(deps.home), request),
+    backups: (deps) => geminiBackups(deps, geminiPaths(deps.home)),
     exportItem: (deps, key) => exportGemini(deps, geminiPaths(deps.home), key),
     importItem: (deps, item, to, versions) => importGemini(deps, geminiPaths(deps.home), item, to, versions)
   }

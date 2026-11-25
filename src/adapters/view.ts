@@ -48,7 +48,7 @@ export type Scope = 'user' | 'project' | 'local'
 export type ProjectScope = 'project' | 'local'
 
 export interface Item {
-  /** Unique and stable across reads, e.g. `skills:/abs/path/SKILL.md`. Actions name items by key. */
+  /** Unique and stable across reads, e.g. `skills:["/abs/skills/review"]` (itemKey). Opaque to the panel; actions name items by key. */
   key: string
   /** The agent this item belongs to. */
   agent: AgentId

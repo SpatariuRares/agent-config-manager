@@ -8,7 +8,7 @@ import { claudeProvider, CLAUDE_PROJECT_SCOPES, CLAUDE_SUPPORTS } from './index.
 const USER = '/home/.claude/settings.json'
 const files = {
   [USER]: JSON.stringify({ enabledPlugins: { 'a@m': true } }, null, 2) + '\n',
-  '/home/.claude.json': JSON.stringify({ projects: { '/work/shop': {} } }),
+  '/home/.claude.json': JSON.stringify({ mcpServers: { db: { command: 'pg-mcp', args: ['--readonly'] } }, projects: { '/work/shop': {} } }),
   '/home/.claude/skills/review/SKILL.md': '---\nname: review\n---\n',
   '/work/shop/README.md': 'shop'
 }

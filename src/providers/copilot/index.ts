@@ -35,7 +35,7 @@ import type { AgentProvider } from '../types.ts'
 import { COPILOT, copilotPaths, OWNER } from './paths.ts'
 import { readCopilot } from './read.ts'
 import { exportCopilot, importCopilot } from './transfer.ts'
-import { runCopilotAction } from './write.ts'
+import { copilotBackups, COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE, runCopilotAction } from './write.ts'
 
 /** What works today, per class. `restore` puts back what a remove or a move changed. */
 export const COPILOT_SUPPORTS: Partial<Record<Kind, ActionType[]>> = {
@@ -70,6 +70,7 @@ export const COPILOT_NOTE = [
 export function copilotProvider(): AgentProvider {
   return {
     id: COPILOT,
+    mcpDestinations: [COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE],
     async info({ fs, exec, home }): Promise<AgentInfo> {
       const paths = copilotPaths(home)
       const detected =
@@ -88,8 +89,9 @@ export function copilotProvider(): AgentProvider {
       }
     },
     buildView: async ({ fs, home }) => (await readCopilot(fs, copilotPaths(home))).view,
-    runAction: ({ fs, home, clock }, request) => runCopilotAction(fs, copilotPaths(home), clock ?? (() => new Date()), request),
+    runAction: (deps, request) => runCopilotAction(deps, copilotPaths(deps.home), request),
+    backups: (deps) => copilotBackups(deps, copilotPaths(deps.home)),
     exportItem: ({ fs, home }, key) => exportCopilot(fs, copilotPaths(home), key),
-    importItem: ({ fs, home, clock }, item, to, versions) => importCopilot(fs, copilotPaths(home), clock ?? (() => new Date()), item, to, versions)
+    importItem: (deps, item, to, versions) => importCopilot(deps, copilotPaths(deps.home), item, to, versions)
   }
 }

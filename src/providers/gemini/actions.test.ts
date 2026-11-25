@@ -66,7 +66,7 @@ test('a CLI that exits 0 without changing anything is reported as a failure with
   const view = await viewOf(m.deps)
   const answer = await act(m.deps, { type: 'setEnabled', key: itemOf(view, 'plugins', 'obsidian').key, enabled: false }, view.versions)
   assert.equal(answer.result.ok, false)
-  assert.equal(refused(answer.result).reason, 'cli')
+  assert.equal(refused(answer.result).reason, 'did-not-change')
   assert.match(answer.result.message, /does not exist/)
 })
 
@@ -201,19 +201,69 @@ test('moving an MCP server runs `gemini mcp add` at the destination, then `gemin
   ])
 })
 
-test('an MCP server with env values or headers is not movable: the CLI would put them on its command line', async () => {
+test('a move whose remove leaves the server at its source is partial, naming the backups', async () => {
+  const m = withCli((m, argv, cwd) => {
+    if (argv[1] !== 'add') return { ok: true, output: 'removed' }
+    const file = cwd === SHOP ? SHOP_SETTINGS : USER_SETTINGS
+    const settings = JSON.parse(m.fs.files[file].replace(/^\/\/.*\n/, ''))
+    settings.mcpServers[argv[6]] = { command: argv[7], args: argv.slice(9) }
+    write(m, file, settings)
+  })
+  const view = await viewOf(m.deps)
+  const moved = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'db', SHOP).key, to: { project: null }, copy: false }, view.versions)
+  assert.equal(refused(moved.result).reason, 'partial')
+  assert.match(moved.result.message, /^gemini mcp add for db worked; then gemini mcp remove for db exited without an error, but \/work\/shop\/\.gemini\/settings\.json does not show the change: removed\. The backups made first can put the files back: /)
+})
+
+test('an MCP server with secret-looking env or args is not movable: the CLI would put them on its command line', async () => {
   const m = withCli(() => undefined)
   const view = await viewOf(m.deps)
   const secretive = itemOf(view, 'mcp', 'secretive')
   assert.equal(secretive.movable, false)
-  assert.match(secretive.notMovableReason ?? '', /env/)
+  assert.match(secretive.notMovableReason ?? '', /env\.API_KEY/)
   const answer = await act(m.deps, { type: 'move', key: secretive.key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
-  assert.equal(refused(answer.result).reason, 'not-movable')
+  assert.equal(refused(answer.result).reason, 'secret')
   const local = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'context7').key, to: { project: SHOP, scope: 'local' }, copy: true }, view.versions)
   assert.equal(local.result.ok, false, 'Gemini CLI has no only-me project settings')
   const same = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'context7').key, to: { project: null }, copy: false }, view.versions)
   assert.equal(refused(same.result).reason, 'same-place')
   assert.deepEqual(m.exec.calls, [])
+})
+
+test('an MCP move carries ${VAR} env and headers as -e and -H, as an import does; a literal secret still stays', async () => {
+  const servers = {
+    envy: { command: 'srv', args: ['--port', '1'], env: { API_KEY: '${API_KEY}' } },
+    headed: { httpUrl: 'https://api.example/mcp', headers: { Authorization: 'Bearer ${TOKEN}' }, timeout: 5000 },
+    leaky: { command: 'srv', env: { API_KEY: 'sk-live-0123456789abcdef' } }
+  }
+  const m = withCli(
+    (m, argv, cwd) => {
+      const file = cwd === SHOP ? SHOP_SETTINGS : USER_SETTINGS
+      const settings = JSON.parse(m.fs.files[file].replace(/^\/\/.*\n/, ''))
+      const name = Object.keys(servers).find((candidate) => argv.includes(candidate))!
+      if (argv[1] === 'add') settings.mcpServers[name] = { command: 'added' }
+      else delete settings.mcpServers[name]
+      write(m, file, settings)
+    },
+    { ...files(), [SHOP_SETTINGS]: json({ mcpServers: servers }) }
+  )
+  let view = await viewOf(m.deps)
+  assert.equal(itemOf(view, 'mcp', 'envy', SHOP).movable, true)
+  assert.equal(itemOf(view, 'mcp', 'headed', SHOP).movable, true)
+  for (const name of ['envy', 'headed']) {
+    const moved = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', name, SHOP).key, to: { project: null }, copy: false }, view.versions)
+    assert.equal(moved.result.ok, true, moved.result.message)
+    view = await viewOf(m.deps)
+  }
+  const leaky = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'leaky', SHOP).key, to: { project: null }, copy: true }, view.versions)
+  assert.equal(refused(leaky.result).reason, 'secret')
+  assert.doesNotMatch(leaky.result.message, /sk-live/)
+  assert.deepEqual(m.exec.calls, [
+    'gemini mcp add --scope user --transport stdio -e API_KEY=${API_KEY} envy srv -- --port 1 @ -',
+    `gemini mcp remove --scope project envy @ ${SHOP}`,
+    'gemini mcp add --scope user --transport http --timeout=5000 -H Authorization: Bearer ${TOKEN} headed https://api.example/mcp @ -',
+    `gemini mcp remove --scope project headed @ ${SHOP}`
+  ])
 })
 
 test('moving an MCP server onto a name the destination already has is refused', async () => {
@@ -264,7 +314,7 @@ test('B4: a server with a secret in its args or url is never put on a gemini com
   const toGlobal = await act(m.deps, { type: 'move', key: leaky.key, to: { project: null }, copy: true }, view.versions)
   const toProject = await act(m.deps, { type: 'move', key: vercel.key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
   for (const answer of [toGlobal, toProject]) {
-    assert.equal(refused(answer.result).reason, 'not-movable')
+    assert.equal(refused(answer.result).reason, 'secret')
     assert.doesNotMatch(answer.result.message, /sk-live|abc123token/)
   }
   assert.deepEqual(m.exec.calls, [])
@@ -274,9 +324,43 @@ test('B4: a failing gemini command is named with its server and outcome, never i
   const m = withCli(() => ({ ok: false, output: 'Error: rejected --api-key sk-live-SECRET1234567890' }))
   const view = await viewOf(m.deps)
   const answer = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', 'context7').key, to: { project: SHOP, scope: 'project' }, copy: true }, view.versions)
-  assert.equal(refused(answer.result).reason, 'cli')
+  assert.equal(refused(answer.result).reason, 'cli-failed')
   assert.match(answer.result.message, /gemini mcp add/)
   assert.match(answer.result.message, /context7/)
   assert.doesNotMatch(answer.result.message, /sk-live|--transport|--scope|@upstash/)
   assert.equal(m.exec.calls.length, 1)
+})
+
+test('an MCP move keeps the declared type: an unknown transport and httpUrl with url are refused, sse and url alone move', async () => {
+  const servers = {
+    socket: { type: 'ws', url: 'wss://x.example/mcp' },
+    both: { httpUrl: 'https://a.example/mcp', url: 'https://b.example/mcp' },
+    streamed: { type: 'sse', url: 'https://s.example/sse' },
+    plain: { url: 'https://p.example/mcp' }
+  }
+  const m = withCli(
+    (m, argv) => {
+      const settings = JSON.parse(m.fs.files[USER_SETTINGS].replace(/^\/\/.*\n/, ''))
+      settings.mcpServers[Object.keys(servers).find((candidate) => argv.includes(candidate))!] = { command: 'added' }
+      write(m, USER_SETTINGS, settings)
+    },
+    { ...files(), [SHOP_SETTINGS]: json({ mcpServers: servers }) }
+  )
+  let view = await viewOf(m.deps)
+  for (const [name, paths] of [['socket', 'transport'], ['both', 'httpUrl, url']]) {
+    assert.equal(itemOf(view, 'mcp', name, SHOP).movable, false, name)
+    const answer = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', name, SHOP).key, to: { project: null }, copy: true }, view.versions)
+    assert.equal(refused(answer.result).reason, 'not-movable', `${name}: ${answer.result.message}`)
+    assert.match(answer.result.message, new RegExp(`\\(${paths}\\)`), `${name}: ${answer.result.message}`)
+  }
+  assert.deepEqual(m.exec.calls, [], 'a refused server reached the CLI')
+  for (const name of ['streamed', 'plain']) {
+    const copied = await act(m.deps, { type: 'move', key: itemOf(view, 'mcp', name, SHOP).key, to: { project: null }, copy: true }, view.versions)
+    assert.equal(copied.result.ok, true, copied.result.message)
+    view = await viewOf(m.deps)
+  }
+  assert.deepEqual(m.exec.calls, [
+    'gemini mcp add --scope user --transport sse streamed https://s.example/sse @ -',
+    'gemini mcp add --scope user --transport http plain https://p.example/mcp @ -'
+  ])
 })

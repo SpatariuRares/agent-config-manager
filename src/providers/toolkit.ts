@@ -4,22 +4,24 @@ export type { CliResult, Clock, CommandRunner, FileSystem, Http, HttpResult } fr
 
 // JSON config files: never-throwing reads and the versions that let a write refuse a concurrent change.
 export { isObject, parseObject, readJson, versionOf, type Json } from '../core/json.ts'
-// The versioned write: version check, backup, then the write. Check which files the agent may write first.
-export { CHANGED, editJsonFile, replaceJson, unreadable, type JsonEdit, type WriteResult } from '../core/json-write.ts'
-// The per-agent backup store: backups before writes, a restorable trash, and the list the view shows.
+// The guarded change: every write and every CLI run that changes files goes through it (version check, backup
+// first, the effect, the post-condition, one wording per refusal). Check which files the agent may write first.
 export {
-  backUp,
-  backupTarget,
-  isTrashName,
-  listAllBackups,
-  listBackups,
-  restoreFile,
-  restoreTrash,
-  trashEntry,
-  type BackupInfo,
-  type BackupStore,
-  type TrashResult
-} from '../core/backups.ts'
+  guardedChange,
+  restoreOf,
+  unreadable,
+  versionRefusal,
+  type Change,
+  type ChangeDeps,
+  type ChangeRefusal,
+  type ChangeResult,
+  type Effect,
+  type Step
+} from '../core/guarded-change.ts'
+// The per-agent backup store: a restorable trash for removed entries, and the list the view shows. Restore and
+// snapshot are not the provider's: it declares a BackupPlan and the router runs them (./backup-actions.ts).
+export { backUp, backupTarget, isTrashName, listAllBackups, listBackups, trashEntry, type BackupInfo, type BackupStore, type TrashResult } from '../core/backups.ts'
+export type { BackupPlan, OwnedFile, RestoreRequest } from './backup-actions.ts'
 // Path guards and known projects.
 export { appBackupDir, existingProjects, occupied, sameFolder, tilde } from '../core/paths.ts'
 // SKILL.md folders and agent .md files.
@@ -30,9 +32,9 @@ export { moveEntry, readEntryDir, type EntryKind, type EntryPlaces, type EntryRe
 export { optionLikeRefusal, shellQuote } from '../core/cli.ts'
 // Secret-safe text: MCP args and URLs, hook commands and CLI output pass through these before an item or a message shows them.
 export { argsHaveSecret, looksSecret, REDACTED, redactArgs, redactCommand, redactUrl, urlHasSecret } from '../core/redact.ts'
-// Item keys the router can read the kind from.
+// Item keys and the key -> ref index: build the view through itemIndex, resolve an action's key with lookup.
+export { decodeKey, GONE, itemIndex, itemKey, type DecodedKey, type Found, type IndexBuilder, type ItemIndex, type KeyPart } from './item-index.ts'
 export {
-  itemKey,
   KINDS,
   type AgentProvider,
   type Exported,
@@ -43,5 +45,18 @@ export {
   type ProviderView,
   type Refusal
 } from './types.ts'
-// 'copyToAgent': Portable shapes from an agent's fields, and the secret refusals every import applies.
-export { exportSkill, isReference, literalValues, mcpJson, portableMcp, secretRefusal, skillEntry, type McpFields } from './portable.ts'
+// 'copyToAgent': Portable shapes from an agent's config.
+export { exportSkill, mcpJson, PORTABLE, portableMcp, skillEntry } from './portable.ts'
+// The MCP server policy: whether a server may be written to a destination, and how a view describes it.
+export {
+  admitMcp,
+  commandLine,
+  describeMcp,
+  privateFile,
+  teamFile,
+  type Admitted,
+  type Carries,
+  type Destination,
+  type McpConfig,
+  type Transport
+} from './mcp-policy.ts'

@@ -1,16 +1,16 @@
 // The on-demand update check: asks GitHub, the npm registry and local marketplace checkouts whether each item
 // with an update source has something newer. Only runs when the user asks; never writes anything.
-import { isObject, type Json } from '../../core/json.ts'
-import type { Http } from '../../core/ports.ts'
 import type { UpdatesAnswer, UpdateStatus } from '../../adapters/view.ts'
 import { readUpdateTargets } from './actions.ts'
-import type { ClaudeDeps } from './ports.ts'
+import { isObject, type Http, type Json, type ProviderDeps } from '../toolkit.ts'
+import { git } from './cli.ts'
+import { claudePaths } from './inventory.ts'
 import { compareVersions, latestNpmVersion, type UpdateTarget } from './update-sources.ts'
 
 const LATER = 'checked when you update'
 
 /** Checks every item that has an update source. Never throws: what cannot be checked is unknown, with a reason. */
-export async function checkClaudeUpdates(deps: ClaudeDeps & { http: Http }): Promise<UpdatesAnswer> {
+export async function checkClaudeUpdates(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer> {
   const checkedAt = (deps.clock ?? (() => new Date()))().getTime()
   const statuses: Record<string, UpdateStatus> = {}
   const errors: string[] = []
@@ -91,7 +91,7 @@ interface Marketplace {
   plugins: Json[]
 }
 
-async function readMarketplace(deps: ClaudeDeps, name: string): Promise<Marketplace | null> {
+async function readMarketplace(deps: ProviderDeps, name: string): Promise<Marketplace | null> {
   const parse = async (path: string): Promise<Json> => {
     try {
       const value = JSON.parse((await deps.fs.readText(path)) ?? '{}')
@@ -100,9 +100,9 @@ async function readMarketplace(deps: ClaudeDeps, name: string): Promise<Marketpl
       return {}
     }
   }
-  const known = (await parse(`${deps.paths.claudeDir}/plugins/known_marketplaces.json`))[name]
-  const dir =
-    isObject(known) && typeof known.installLocation === 'string' ? known.installLocation : `${deps.paths.claudeDir}/plugins/marketplaces/${name}`
+  const { claudeDir } = claudePaths(deps.home)
+  const known = (await parse(`${claudeDir}/plugins/known_marketplaces.json`))[name]
+  const dir = isObject(known) && typeof known.installLocation === 'string' ? known.installLocation : `${claudeDir}/plugins/marketplaces/${name}`
   const manifest = await parse(`${dir}/.claude-plugin/marketplace.json`)
   if (!Array.isArray(manifest.plugins)) return null
   const kind = isObject(known) && isObject(known.source) ? known.source.source : null
@@ -112,7 +112,7 @@ async function readMarketplace(deps: ClaudeDeps, name: string): Promise<Marketpl
 /** Claude Code may append the commit to a declared version (`1.0.0-5cec67167672`); that suffix is not a pre-release. */
 const declared = (version: string) => version.replace(/-[0-9a-f]{7,40}$/, '')
 
-async function checkPlugin(deps: ClaudeDeps, target: Extract<UpdateTarget, { type: 'plugin' }>, market: Marketplace | null): Promise<UpdateStatus> {
+async function checkPlugin(deps: ProviderDeps, target: Extract<UpdateTarget, { type: 'plugin' }>, market: Marketplace | null): Promise<UpdateStatus> {
   const unknown: UpdateStatus = { status: 'unknown', latest: null, note: LATER }
   const entry = market?.plugins.find((plugin) => plugin.name === target.name)
   if (market === null || entry === undefined) return unknown
@@ -127,7 +127,7 @@ async function checkPlugin(deps: ClaudeDeps, target: Extract<UpdateTarget, { typ
   const path = typeof entry.source === 'string' && entry.source.startsWith('./') ? entry.source.slice(2).replace(/\/$/, '') : null
   if (market.gitDir === null || path === null || path === '' || path.split('/').includes('..') || target.commit === null) return unknown
   if (!/^[0-9a-f]{4,64}$/.test(target.commit)) return unknown
-  const answer = await deps.cli.git(['rev-parse', 'HEAD', `${target.commit}:${path}`, `HEAD:${path}`], market.gitDir)
+  const answer = await git(deps.exec, ['rev-parse', 'HEAD', `${target.commit}:${path}`, `HEAD:${path}`], market.gitDir)
   const [head, installed, latest] = answer.output.split('\n').map((line) => line.trim())
   if (!answer.ok || !head || !installed || !latest) return unknown
   return { status: installed === latest ? 'current' : 'available', latest: head.slice(0, 12) }

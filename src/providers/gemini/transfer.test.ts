@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ActionResult } from '../../adapters/view.ts'
 import type { CliResult } from '../../core/ports.ts'
-import { itemKey, type PortableMcp, type PortableSkill, type ProviderDeps } from '../types.ts'
+import { itemKey } from '../item-index.ts'
+import { type PortableMcp, type PortableSkill, type ProviderDeps } from '../types.ts'
 import { geminiProvider } from './index.ts'
 import { BACKUPS, files, GEMINI, HOME, json, machine, SHOP, SHOP_SETTINGS, userSettingsText, USER_SETTINGS } from './test-support.ts'
 
@@ -65,7 +66,7 @@ test('Gemini export refuses settings another agent cannot take (timeout, trust, 
   const { deps } = machine({ files: fixture })
   const result = (await provider.exportItem!(deps, itemKey('mcp', null, 'tuned'))) as ActionResult
   assert.equal(refused(result).reason, 'not-portable')
-  assert.match(result.message, /timeout, trust, includeTools/)
+  assert.match(result.message, /rest\.timeout, rest\.trust, rest\.includeTools/)
 })
 
 test('Gemini export: a skill as its folder', async () => {
@@ -124,7 +125,7 @@ test('Gemini import refuses a name already there, and reports a CLI that did not
   assert.equal(refused(await importInto(taken, { ...STDIO, name: 'context7' })).reason, 'exists')
   assert.deepEqual(taken.exec.calls, [])
   const silent = withCli(files(), () => ({ ok: true, output: 'MCP server added' }))
-  assert.equal(refused(await importInto(silent, STDIO)).reason, 'cli')
+  assert.equal(refused(await importInto(silent, STDIO)).reason, 'did-not-change')
 })
 
 test('Gemini import: a skill folder is copied into ~/.gemini/skills (Gemini CLI has no remove here, so no undo)', async () => {
@@ -150,4 +151,15 @@ test('Gemini import: the remove hint of a copied skill names the folder it was c
   assert.equal(result.ok, true, result.message)
   assert.ok(m.fs.files[`${GEMINI}/skills/pdf tools;x/SKILL.md`])
   assert.ok(result.message.endsWith(`To remove it: gemini skills uninstall 'pdf tools;x'`), result.message)
+})
+
+test('Gemini export keeps the declared type: a ws server and a server with httpUrl and url are refused, naming the fields', async () => {
+  const fixture = files()
+  fixture[USER_SETTINGS] = json({ mcpServers: { socket: { type: 'ws', url: 'wss://x.example/mcp' }, both: { httpUrl: 'https://a.example/mcp', url: 'https://b.example/mcp' } } })
+  const { deps } = machine({ files: fixture })
+  for (const [name, paths] of [['socket', '(transport)'], ['both', '(httpUrl, url)']]) {
+    const result = (await provider.exportItem!(deps, itemKey('mcp', null, name))) as ActionResult
+    assert.equal(refused(result).reason, 'not-portable', `${name}: ${result.message}`)
+    assert.ok(result.message.includes(paths), `${name}: ${result.message}`)
+  }
 })

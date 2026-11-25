@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Action, Item } from '../../adapters/view.ts'
 import { itemKey, type ProviderDeps } from '../toolkit.ts'
+import { routeAction } from '../router.ts'
 import { fakeExec, fakeFs, providerContract } from '../testing.ts'
 import { copilotProvider, COPILOT_SUPPORTS } from './index.ts'
 
@@ -58,8 +59,9 @@ function machine(overrides: Record<string, string> = {}, commands: Record<string
 }
 const provider = copilotProvider()
 const viewOf = (deps: ProviderDeps) => provider.buildView(deps)
+/** Through the real router, which runs restore from the provider's declared backups. */
 const run = async (deps: ProviderDeps, action: Action, versions?: Record<string, string>) =>
-  provider.runAction(deps, { agent: 'copilot', action, versions: versions ?? (await viewOf(deps)).versions })
+  (await routeAction(deps, [provider], { agent: 'copilot', action, versions: versions ?? (await viewOf(deps)).versions })).result
 const byKind = (items: Item[], kind: Item['kind']) => items.filter((item) => item.kind === kind)
 const summary = (item: Item) => `${item.name} ${item.project ?? 'global'} ${item.movable ? 'rw' : 'ro'}`
 
@@ -191,6 +193,47 @@ test('a write refuses a stale view: nothing is written, not even half a move', a
   assert.deepEqual(fs.files, before)
 })
 
+test('an MCP move whose remove write throws is partial, names the backups, and a restore puts the destination back', async () => {
+  const { deps, fs } = machine()
+  const TEAM = `${SHOP}/.github/mcp.json`
+  const writeText = fs.writeText.bind(fs)
+  fs.writeText = async (path, text) => {
+    if (path === MCP) throw Object.assign(new Error(`EACCES: permission denied, open '${MCP}'`), { code: 'EACCES' })
+    return writeText(path, text)
+  }
+  const moved = await run(deps, { type: 'move', key: mcpKey(MCP, 'context7'), to: { project: SHOP, scope: 'project' }, copy: false })
+  assert.equal(!moved.ok && moved.reason, 'partial')
+  const { backups } = await viewOf(deps)
+  const backupOf = (file: string) => backups.find((backup) => backup.target === file)!.name
+  assert.ok(moved.message.includes(backupOf(TEAM)) && moved.message.includes(backupOf(MCP)), moved.message)
+  assert.equal(fs.files[MCP], FILES[MCP])
+  assert.notEqual(fs.files[TEAM], FILES[TEAM])
+  deps.clock = () => new Date('2026-11-24T11:00:00.000Z')
+  const restored = await run(deps, { type: 'restore', name: backupOf(TEAM) })
+  assert.equal(restored.ok, true, restored.message)
+  assert.equal(fs.files[TEAM], FILES[TEAM])
+})
+
+test('a skill or agent move or remove refuses as changed when its file changed since the view, and changes nothing', async () => {
+  const { deps, fs } = machine()
+  const view = await viewOf(deps)
+  fs.files[`${DIR}/skills/review/SKILL.md`] += 'edited meanwhile\n'
+  fs.files[`${DIR}/agents/planner.agent.md`] += 'edited meanwhile\n'
+  const before = structuredClone(fs.files)
+  const skill = itemKey('skills', `${DIR}/skills/review`)
+  const agent = itemKey('agents', `${DIR}/agents/planner.agent.md`)
+  for (const action of [
+    { type: 'move', key: skill, to: { project: SHOP }, copy: false },
+    { type: 'move', key: agent, to: { project: SHOP }, copy: true },
+    { type: 'remove', key: skill },
+    { type: 'remove', key: agent }
+  ] satisfies Action[]) {
+    const result = await run(deps, action, view.versions)
+    assert.equal(!result.ok && result.reason, 'changed', JSON.stringify(action))
+  }
+  assert.deepEqual(fs.files, before)
+})
+
 test('secrets in env, headers, args, URLs and hooks never appear in the view', async () => {
   const secrets = ['ghp_ENVSECRET1234', 'HEADERSECRET5678', 'ARGSECRET9012', 'URLSECRET3456', 'HOOKSECRET7890', 'HOOKENV1234', 'BAREghp']
   const { deps } = machine({
@@ -295,4 +338,19 @@ test('an MCP server with a secret in its args or url is not copied into a projec
     assert.doesNotMatch(moved.message, /sk-live|abc123tok/)
   }
   assert.deepEqual(fs.files, before)
+})
+
+test('the Copilot bug: an env value with a `$` but no ${VAR} reference is a literal, and is not moved into the team .github/mcp.json', async () => {
+  const value = 'sk-live-0123456789abcdef$x'
+  const { deps, fs } = machine({ [MCP]: json({ mcpServers: { sneaky: { command: 's', args: [], env: { TOKEN: value } } } }) })
+  const before = structuredClone(fs.files)
+  const moved = await run(deps, { type: 'move', key: mcpKey(MCP, 'sneaky'), to: { project: SHOP, scope: 'project' }, copy: false })
+  assert.equal(!moved.ok && moved.reason, 'secret')
+  assert.match(moved.message, /literal env or header values \(env\.TOKEN\)/)
+  assert.ok(!moved.message.includes(value), 'the message shows the value')
+  assert.deepEqual(fs.files, before, 'nothing was written')
+  // Its own user file is not shared, and no command line sees it: a copy to global keeps the literal.
+  const global = machine({ [`${SHOP}/.github/mcp.json`]: json({ mcpServers: { sneaky: { command: 's', env: { TOKEN: value } } } }) })
+  const copied = await run(global.deps, { type: 'move', key: mcpKey(`${SHOP}/.github/mcp.json`, 'sneaky'), to: { project: null }, copy: true })
+  assert.equal(copied.ok, true, copied.message)
 })

@@ -1,21 +1,15 @@
 // Removes a plugin through the official CLI, which owns the plugin files. There is no undo:
 // the CLI deletes the plugin's files, so the way back is `claude plugin install <id>`.
-import { projectSettingsFile, settingsFile } from './inventory.ts'
-import type { FileSystem } from '../../core/ports.ts'
-import type { ClaudePaths, PluginCli } from './ports.ts'
-import { backUp, type Clock } from './toggle.ts'
+import { backUp, type ProviderDeps } from '../toolkit.ts'
+import { pluginUninstall } from './cli.ts'
+import { claudeBackups, claudePaths, projectSettingsFile, settingsFile } from './inventory.ts'
 
 export type UninstallResult =
   | { ok: true; backups: string[] }
   | { ok: false; reason: 'unknown-plugin' | 'cli-failed'; message: string; backups: string[] }
 
-export async function uninstallPlugin(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  id: string,
-  clock: Clock = () => new Date()
-): Promise<UninstallResult> {
+export async function uninstallPlugin({ fs, exec, home, clock = () => new Date() }: ProviderDeps, id: string): Promise<UninstallResult> {
+  const paths = claudePaths(home)
   let installed: Record<string, any> = {}
   try {
     installed = JSON.parse((await fs.readText(`${paths.claudeDir}/plugins/installed_plugins.json`)) ?? '{}') ?? {}
@@ -46,11 +40,11 @@ export async function uninstallPlugin(
   )
   for (const file of [...new Set(files)]) {
     const text = await fs.readText(file)
-    if (text !== null) backups.push(await backUp(fs, paths, file, text, clock))
+    if (text !== null) backups.push(await backUp(fs, claudeBackups(paths), file, text, clock))
   }
 
   for (const record of runnable) {
-    const { ok, output } = await cli.uninstall(id, record.scope, record.project)
+    const { ok, output } = await pluginUninstall(exec, id, record.scope, record.project)
     if (!ok) failures.push(`${record.scope}${record.project ? ` (${record.project})` : ''}: ${output.trim()}`)
   }
   if (failures.length > 0) return { ok: false, reason: 'cli-failed', message: failures.join('\n'), backups }

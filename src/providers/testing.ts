@@ -2,37 +2,15 @@
 // In a provider's test file: `providerContract(myProvider, { home, files, write })`.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fakeFs } from '../core/test-support.ts'
-import type { CliResult, CommandRunner } from '../core/ports.ts'
+import { isObject } from '../core/json.ts'
+import type { CommandRunner } from '../core/ports.ts'
+import { fakeExec, fakeFs } from '../core/test-support.ts'
 import type { Action, ActionResult, ActionType, AgentInfo, Kind, View } from '../adapters/view.ts'
+import { admitMcp } from './mcp-policy.ts'
 import { routeAction, routeView } from './router.ts'
-import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, PORTABLE_KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
+import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, PORTABLE_KINDS, type AgentProvider, type PortableMcp, type ProviderDeps, type ProviderView } from './types.ts'
 
-export { fakeFs }
-
-type Reply = (command: string, argv: readonly string[], cwd: string | null) => CliResult | Promise<CliResult>
-
-/**
- * A CommandRunner that runs nothing. `find` knows only `commands` (name -> path). Every run is recorded in
- * `calls` as `<command> <argv...> @ <cwd or ->`; it answers with `reply`, else success for a known command
- * and "not found" for any other.
- */
-export function fakeExec(options: { commands?: Record<string, string>; reply?: Reply } = {}): CommandRunner & { calls: string[] } {
-  const commands = options.commands ?? {}
-  const calls: string[] = []
-  const known = (name: string) => name.startsWith('/') || Object.hasOwn(commands, name)
-  return {
-    calls,
-    async find(name) {
-      return Object.hasOwn(commands, name) ? commands[name] : null
-    },
-    async run(command, argv, cwd) {
-      calls.push(`${[command, ...argv].join(' ')} @ ${cwd ?? '-'}`)
-      if (options.reply) return options.reply(command, argv, cwd)
-      return known(command) ? { ok: true, output: '' } : { ok: false, output: `The ${command} command was not found.` }
-    }
-  }
-}
+export { fakeExec, fakeFs }
 
 export interface ContractFixture {
   /** The fake home folder; the provider finds its config under it. */
@@ -95,6 +73,70 @@ function probe(type: ActionType, kind: Kind, key: string): Action {
   }
 }
 
+/** A literal secret the MCP probes carry: a token followed by `$x`, which a whole-word token check would miss. */
+const MCP_SECRET = 'sk-live-0123456789abcdef$x'
+/** What must never reach a command line or a team file: the token itself, whatever follows it. */
+const MCP_LEAK = 'sk-live-0123456789abcdef'
+
+/** A command runner that finds every command and lets every run succeed, recording each one as `fakeExec` does. */
+function everyCommand(): CommandRunner & { calls: string[] } {
+  const calls: string[] = []
+  return {
+    calls,
+    find: async (name) => `/usr/bin/${name}`,
+    run: async (command, argv, cwd) => {
+      calls.push(`${[command, ...argv].join(' ')} @ ${cwd ?? '-'}`)
+      return { ok: true, output: '' }
+    }
+  }
+}
+
+/** Adds MCP_SECRET to the env (TOKEN) and the args of every stdio server under an `mcpServers` key, at any depth. */
+function addSecret(value: unknown, names: Set<string>): void {
+  if (Array.isArray(value)) return value.forEach((entry) => addSecret(entry, names))
+  if (!isObject(value)) return
+  for (const [key, child] of Object.entries(value)) {
+    if (key !== 'mcpServers' || !isObject(child)) {
+      addSecret(child, names)
+      continue
+    }
+    for (const [name, server] of Object.entries(child)) {
+      if (!isObject(server) || typeof server.command !== 'string') continue
+      server.args = [...(Array.isArray(server.args) ? server.args : []), MCP_SECRET]
+      server.env = { ...(isObject(server.env) ? server.env : {}), TOKEN: MCP_SECRET }
+      names.add(name)
+    }
+  }
+}
+
+/**
+ * The fixture's files with MCP_SECRET in every stdio server: JSON (comment lines dropped) through addSecret, and a
+ * TOML file with `[mcp_servers.` sections gets a `contract-probe` server. Returns the files and the names of the
+ * servers that carry the secret.
+ */
+function withMcpSecret(files: Record<string, string>): { files: Record<string, string>; names: Set<string> } {
+  const names = new Set<string>()
+  const out = structuredClone(files)
+  for (const [path, text] of Object.entries(out)) {
+    if (path.endsWith('.toml') && text.includes('[mcp_servers.')) {
+      out[path] = `${text}\n[mcp_servers.contract-probe]\ncommand = "npx"\nargs = ["${MCP_SECRET}"]\nenv = { TOKEN = "${MCP_SECRET}" }\n`
+      names.add('contract-probe')
+      continue
+    }
+    if (!path.endsWith('.json')) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ''))
+    } catch {
+      continue
+    }
+    const before = names.size
+    addSecret(parsed, names)
+    if (names.size > before) out[path] = `${JSON.stringify(parsed, null, 2)}\n`
+  }
+  return { files: out, names }
+}
+
 /** Registers the tests every provider must pass. Call it once, at the top level of the provider's test file. */
 export function providerContract(provider: AgentProvider, fixture: ContractFixture): void {
   const name = `${provider.id} provider contract`
@@ -111,6 +153,7 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
       id: provider.id,
       info: (deps) => provider.info(deps),
       buildView: (deps) => provider.buildView(deps),
+      ...(provider.backups ? { backups: (deps: ProviderDeps) => provider.backups!(deps) } : {}),
       runAction: (deps, request) => {
         calls.push(request.action)
         return provider.runAction(deps, request)
@@ -144,6 +187,8 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
     }
     if ((info.exports ?? []).length > 0) assert.equal(typeof provider.exportItem, 'function', 'exports are listed, so exportItem must exist')
     if ((info.imports ?? []).length > 0) assert.equal(typeof provider.importItem, 'function', 'imports are listed, so importItem must exist')
+    const backs = Object.values(info.supports).some((actions) => (actions ?? []).some((action) => BACKUP_ACTIONS.includes(action)))
+    if (backs) assert.equal(typeof provider.backups, 'function', 'restore or snapshot is listed, so backups must be declared')
     assert.equal(typeof info.configHome, 'string')
     assert.ok(info.configHome !== '')
   })
@@ -216,6 +261,80 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
     const absent = await routeAction(empty, [wrapped], { agent: provider.id, action: { type: 'snapshot' }, versions: {} })
     assert.equal((absent.result as ActionResult & { ok: false }).reason, 'not-detected')
     assert.deepEqual(calls, [])
+  })
+
+  test(`${name}: every MCP destination that is a command line or a team file refuses a literal secret`, async (t) => {
+    const { deps } = machine()
+    const info = await provider.info(deps)
+    if (!(info.imports ?? []).includes('mcp') && !(info.supports.mcp ?? []).includes('move')) return t.skip('writes no MCP servers')
+    const destinations = provider.mcpDestinations ?? []
+    assert.ok(destinations.length > 0, 'it writes MCP servers, so it must expose mcpDestinations')
+    const secret = 'sk-live-0123456789abcdef$x'
+    for (const to of destinations.filter((destination) => destination.team || destination.argv !== null)) {
+      const admitted = admitMcp({ name: 'probe', transport: 'stdio', command: 'npx', env: { TOKEN: secret } }, to)
+      assert.equal(admitted.ok, false, `${to.label} (team: ${to.team}) admitted a literal secret in env`)
+      assert.ok(!admitted.ok && !admitted.message.includes(secret), `${to.label}: the message shows the value`)
+    }
+  })
+
+  test(`${name}: every MCP write path keeps a literal secret off command lines and out of team files`, async (t) => {
+    const { deps: plain } = machine()
+    const info = await provider.info(plain)
+    const moves = (info.supports.mcp ?? []).includes('move')
+    const imports = (info.imports ?? []).includes('mcp')
+    if (!moves && !imports) return t.skip('writes no MCP servers')
+    const { projects } = await viewOf(plain, [provider])
+    const probe = withMcpSecret(fixture.files)
+    const scopes = info.projectScopes.mcp ?? []
+    const targets = [{ project: null }, ...projects.flatMap((project) => (scopes.length > 0 ? scopes.map((scope) => ({ project, scope })) : [{ project }]))]
+    // One fresh machine per write, so an earlier write never makes a later one stale.
+    const attempt = async (label: string, write: (deps: ProviderDeps, view: View) => Promise<ActionResult>) => {
+      const fs = fakeFs(structuredClone(probe.files), structuredClone(fixture.links ?? {}))
+      const exec = everyCommand()
+      const deps: ProviderDeps = { fs, exec, home: fixture.home, clock: CLOCK }
+      const view = await viewOf(deps, [provider])
+      const before = structuredClone(fs.files)
+      const result = await write(deps, view)
+      // A team file leaks when it holds the secret more often than before (a probe server may already be there).
+      const count = (text: string | undefined) => (text ?? '').split(MCP_LEAK).length - 1
+      const teamFiles = Object.keys(fs.files).filter((path) => projects.some((project) => path.startsWith(`${project}/`)))
+      const leaks = [
+        ...exec.calls.filter((call) => call.includes(MCP_LEAK)).map((call) => `argv: ${call}`),
+        ...teamFiles.filter((path) => count(fs.files[path]) > count(before[path])).map((path) => `team file: ${path}`)
+      ]
+      assert.deepEqual(leaks, [], `${label}: ${result.ok ? 'written' : `refused (${result.reason})`}`)
+      assert.ok(!result.message.includes(MCP_LEAK), `${label}: the message shows the secret`)
+      return result
+    }
+    const results: ActionResult[] = []
+    if (moves) {
+      const fs = fakeFs(structuredClone(probe.files), structuredClone(fixture.links ?? {}))
+      const view = await viewOf({ fs, exec: everyCommand(), home: fixture.home, clock: CLOCK }, [provider])
+      const items = view.items.filter((item) => item.kind === 'mcp' && probe.names.has(item.name))
+      assert.ok(items.length > 0, 'it moves MCP servers, so the fixture must hold a stdio MCP server')
+      for (const item of items) {
+        for (const to of targets) {
+          const label = `move ${item.key} to ${to.project ?? 'global'}${'scope' in to ? ` (${to.scope})` : ''}`
+          const action: Action = { type: 'move', key: item.key, to, copy: true }
+          results.push(await attempt(label, async (deps, fresh) => (await routeAction(deps, [provider], { agent: provider.id, action, versions: fresh.versions })).result))
+        }
+      }
+    }
+    if (imports) {
+      assert.equal(typeof provider.importItem, 'function', 'imports are listed, so importItem must exist')
+      // With env and an arg, and with the arg alone, so an agent that cannot carry env still meets the secret.
+      const servers: PortableMcp[] = [
+        { kind: 'mcp', name: 'contract-probe-import', transport: 'stdio', command: 'npx', args: [MCP_SECRET], env: { TOKEN: MCP_SECRET } },
+        { kind: 'mcp', name: 'contract-probe-import', transport: 'stdio', command: 'npx', args: [MCP_SECRET] }
+      ]
+      for (const server of servers) {
+        for (const to of targets) {
+          const label = `copyToAgent ${server.env ? 'with env ' : ''}into ${to.project ?? 'global'}${'scope' in to ? ` (${to.scope})` : ''}`
+          results.push(await attempt(label, (deps, view) => provider.importItem!(deps, structuredClone(server), to, view.versions)))
+        }
+      }
+    }
+    assert.ok(results.some((result) => !result.ok && result.reason === 'secret'), 'no write path refused the secret: the probe never reached the MCP policy')
   })
 
   test(`${name}: a write refuses a stale view, then backs the file up before changing it`, async (t) => {

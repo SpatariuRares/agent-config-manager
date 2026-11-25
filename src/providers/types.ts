@@ -4,6 +4,8 @@
 // error handling, and the fresh view after every action.
 import type { Clock, CommandRunner, FileSystem, Http } from '../core/ports.ts'
 import type { ActionRequest, ActionResult, ActionType, AgentId, AgentInfo, Kind, Target, UpdatesAnswer, View } from '../adapters/view.ts'
+import type { BackupPlan } from './backup-actions.ts'
+import type { Destination } from './mcp-policy.ts'
 
 /** What every provider gets on every call. Nothing else touches the machine. */
 export interface ProviderDeps {
@@ -25,6 +27,13 @@ export interface AgentProvider {
   readonly id: AgentId
 
   /**
+   * Every Destination (./mcp-policy.ts) this provider writes MCP servers through: one per write path (a CLI that
+   * takes the server on its argv, a team file, a private file). Required when it imports MCP servers or moves
+   * them; providerContract proves each one that is a command line or a team file refuses a literal secret.
+   */
+  readonly mcpDestinations?: readonly Destination[]
+
+  /**
    * Who the agent is and what this app can do with it. Must be cheap: only `fs` reads and `exec.find` (PATH),
    * never `exec.run`. The router reads `supports` from here and refuses anything not listed, with reason
    * 'unsupported', before `runAction` is ever called. List only what works; the panel hides the rest.
@@ -34,17 +43,27 @@ export interface AgentProvider {
   /**
    * Everything the agent has, globally and per project. May throw; the router turns that into `{ ok: false }`.
    * Rules (checked by providerContract): every Item has `agent: this.id`, a kind listed in `info().kinds`,
-   * and a unique `key` that starts with `<kind>:` (the router reads the kind from it).
+   * and a unique `key` built with itemKey (./item-index.ts; the router reads the kind from it). Build the items
+   * through itemIndex while reading, and resolve an action's key through the same index.
    * `versions` holds versionOf() of every file read, so a later write can refuse a concurrent change.
    */
   buildView(deps: ProviderDeps): Promise<ProviderView>
 
   /**
-   * Runs one action the router already checked against `info().supports`. Writes go through the core toolkit
-   * (./toolkit.ts): version check against `request.versions`, backup first, then the write. May throw; the router
-   * reports it as reason 'error'. The router builds the fresh view after it, so this returns only the result.
+   * Runs one action the router already checked against `info().supports`, except the backup actions (restore,
+   * snapshot), which the router runs from `backups`. Every write goes through the guarded change module
+   * (guardedChange in the toolkit): version check against `request.versions`, backup first, the write or the CLI,
+   * then the post-condition. May throw; the router reports it as reason 'error'. The router builds the fresh view
+   * after it, so this returns only the result.
    */
   runAction(deps: ProviderDeps, request: ActionRequest): Promise<ActionResult>
+
+  /**
+   * What restore and snapshot work with: the agent's backup store, the files this app writes for it, and its entry
+   * folders (./backup-actions.ts). Required when `info().supports` lists 'restore' or 'snapshot': the router runs
+   * both from it, so a provider never implements them. Reads only.
+   */
+  backups?(deps: ProviderDeps): Promise<BackupPlan>
 
   /** The on-demand update check (network). Omit it when nothing of this agent can be checked. */
   checkUpdates?(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer>
@@ -119,14 +138,4 @@ export const ACTION_TYPES: readonly ActionType[] = [
  */
 export const BACKUP_ACTIONS: readonly ActionType[] = ['restore', 'snapshot']
 
-/** Builds an item key the router can read the kind from: `<kind>:<JSON of parts>`. */
-export const itemKey = (kind: Kind, ...parts: (string | number | null)[]) => `${kind}:${JSON.stringify(parts)}`
-
 export const isKind = (value: unknown): value is Kind => typeof value === 'string' && (KINDS as readonly string[]).includes(value)
-
-/** The kind an item key names, or null when it names none. */
-export function kindOfKey(key: unknown): Kind | null {
-  if (typeof key !== 'string' || !key.includes(':')) return null
-  const kind = key.slice(0, key.indexOf(':'))
-  return isKind(kind) ? kind : null
-}

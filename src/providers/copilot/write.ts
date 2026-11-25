@@ -1,53 +1,92 @@
-// The writes: moving, copying and removing skills, agents and MCP servers, and putting backups back.
-// Every write goes through the toolkit: version check against the view, backup first, then the change.
+// The writes: moving, copying and removing skills, agents and MCP servers. Every file write goes through the
+// guarded change module (version check against the view, backup first, then the change); restore is the router's,
+// from copilotBackups.
 //
-// MCP servers are written as JSON (editJsonFile), not with `copilot mcp add|remove`, because:
+// MCP servers are written as JSON (a guarded JSON edit), not with `copilot mcp add|remove`, because:
 // - `copilot mcp add` takes flags, which cannot carry every field a server may have (cwd, deferTools, OAuth
 //   settings), and it would put env and header values on a command line;
 // - `copilot mcp remove` changes user-level servers only, so a move into or out of a project needs the file anyway;
 // - the Copilot binary is often absent (`gh copilot` downloads it on first use), and the file write works without it.
-// editJsonFile keeps every other key and server as it was, in the same 2-space format Copilot writes.
-import type { Action, ActionRequest, ActionResult, Kind } from '../../adapters/view.ts'
+// The JSON edit keeps every other key and server as it was, in the same 2-space format Copilot writes.
+import type { ActionRequest, ActionResult, Kind } from '../../adapters/view.ts'
 import {
-  argsHaveSecret,
-  backupTarget,
-  CHANGED,
-  editJsonFile,
+  admitMcp,
+  guardedChange,
+  GONE,
   isObject,
-  isTrashName,
   itemKey,
   moveEntry,
-  restoreFile,
-  restoreTrash,
+  privateFile,
+  teamFile,
   tilde,
   trashEntry,
-  urlHasSecret,
-  versionOf,
-  type Clock,
-  type FileSystem,
-  type Json
+  versionRefusal,
+  type BackupPlan,
+  type Carries,
+  type ChangeDeps,
+  type Json,
+  type ProviderDeps
 } from '../toolkit.ts'
 import { OWNER, ownPlace, type CopilotPaths } from './paths.ts'
-import { readCopilot, type Ref } from './read.ts'
+import { copilotMcpConfig, readCopilot, type Ref } from './read.ts'
 
-const fileName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+/**
+ * What Copilot CLI's MCP files hold: `local`/`stdio` servers with command, args and env, `http`/`sse` servers
+ * with url and headers ("Adding MCP servers for GitHub Copilot CLI", docs.github.com). The file is written as
+ * JSON, so a move keeps every other key of the server (tools, cwd, OAuth settings) as it was.
+ */
+const COPILOT_MCP: Carries = { transports: ['stdio', 'http', 'sse'], fields: ['args', 'env', 'headers'], keeps: () => true }
+
+/** A project's .github/mcp.json: shared with the team through the repository. */
+export const COPILOT_TEAM_FILE = teamFile('a project .github/mcp.json', COPILOT_MCP)
+/** ~/.copilot/mcp-config.json: the user's own file; no command line sees it. */
+export const COPILOT_PRIVATE_FILE = privateFile('~/.copilot/mcp-config.json', COPILOT_MCP)
+
 const fail = (reason: string, message: string): ActionResult => ({ ok: false, reason, message })
 
-export async function runCopilotAction(fs: FileSystem, paths: CopilotPaths, clock: Clock, request: ActionRequest): Promise<ActionResult> {
+/** What every guarded change here works with: Copilot's store, and ~ for the home folder in messages. */
+export const changeDeps = (deps: ProviderDeps, paths: CopilotPaths): ChangeDeps => ({
+  fs: deps.fs,
+  exec: deps.exec,
+  store: paths.store,
+  clock: deps.clock ?? (() => new Date()),
+  say: (path) => tilde(paths.home, path)
+})
+
+/** What restore works with (the router runs it): the MCP files this app writes, and Copilot's own entry folders. */
+export async function copilotBackups(deps: ProviderDeps, paths: CopilotPaths): Promise<BackupPlan> {
+  const everywhere = [null, ...(await readCopilot(deps.fs, paths)).view.projects]
+  return {
+    owner: OWNER,
+    store: paths.store,
+    files: everywhere.map((project) => ownPlace(paths, 'mcp', project)),
+    entryFolders: everywhere.flatMap((project) => [ownPlace(paths, 'skills', project), ownPlace(paths, 'agents', project)]),
+    say: (path) => tilde(paths.home, path)
+  }
+}
+
+export async function runCopilotAction(deps: ProviderDeps, paths: CopilotPaths, request: ActionRequest): Promise<ActionResult> {
+  const { fs } = deps
+  const clock = deps.clock ?? (() => new Date())
   const { action, versions } = request
-  const { view, refs } = await readCopilot(fs, paths)
+  const { view, index } = await readCopilot(fs, paths)
   const where = (project: string | null) => (project === null ? 'global' : tilde(paths.home, project))
 
-  if (action.type === 'restore') return restore(fs, paths, clock, view.projects, action.name, versions)
   if (action.type !== 'move' && action.type !== 'remove') return fail('unsupported', `${OWNER} cannot do "${action.type}" here.`)
 
-  const item = view.items.find((candidate) => candidate.key === action.key)
-  if (item === undefined) return fail('changed', 'That item is no longer there. The view was refreshed; try again.')
-  const ref = refs.get(item.key)
-  if (ref === undefined) return fail('not-movable', `"${item.name}" is read-only here. ${item.notMovableReason ?? ''}`.trim())
+  const item = index.item(action.key)
+  if (item === undefined) return GONE
+  const found = index.lookup(item.key)
+  if (!found.ok || !item.movable) return fail('not-movable', `"${item.name}" is read-only here. ${item.notMovableReason ?? ''}`.trim())
+  const { ref } = found
+  // A skill or agent: its SKILL.md or agent file must still be what the view showed (an MCP write checks its file).
+  if (ref.kind !== 'mcp') {
+    const stale = await versionRefusal(changeDeps(deps, paths), [ref.file], versions)
+    if (stale !== null) return stale
+  }
 
   if (action.type === 'remove') {
-    if (ref.kind === 'mcp') return removeServer(fs, paths, clock, ref, versions)
+    if (ref.kind === 'mcp') return removeServer(changeDeps(deps, paths), paths, ref, versions)
     const trashed = await trashEntry(fs, paths.store, ref.entry.entry, clock)
     if (!trashed.ok) return trashed
     return { ok: true, message: `Removed "${item.name}" from ${where(ref.project)}. It is kept in the backups.`, undo: { type: 'restore', name: trashed.name } }
@@ -65,7 +104,7 @@ export async function runCopilotAction(fs: FileSystem, paths: CopilotPaths, cloc
     if (to.project !== null && to.scope === 'local') {
       return fail('unsupported', `${OWNER} has no only-me MCP file in a project. Choose Team to write ${to.project}/.github/mcp.json.`)
     }
-    const moved = await moveServer(fs, paths, clock, ref, to.project, view.projects, versions, action.copy)
+    const moved = await moveServer(changeDeps(deps, paths), paths, ref, to.project, view.projects, versions, action.copy)
     return moved.ok ? done(itemKey('mcp', moved.file, ref.name)) : moved
   }
 
@@ -75,21 +114,19 @@ export async function runCopilotAction(fs: FileSystem, paths: CopilotPaths, cloc
 }
 
 /** Deletes one server from its file. The undo puts the whole file back from the backup made just before. */
-async function removeServer(fs: FileSystem, paths: CopilotPaths, clock: Clock, ref: Ref & { kind: 'mcp' }, versions: Record<string, string>): Promise<ActionResult> {
-  const written = await editJsonFile(fs, paths.store, { file: ref.file, version: versions[ref.file] ?? '', edit: (json) => deleteServer(json, ref) }, clock)
+async function removeServer(deps: ChangeDeps, paths: CopilotPaths, ref: Ref & { kind: 'mcp' }, versions: Record<string, string>): Promise<ActionResult> {
+  const written = await guardedChange(deps, { files: [ref.file], versions, steps: [{ effect: { kind: 'json', file: ref.file, edit: (json) => deleteServer(json, ref) } }] })
   if (!written.ok) return written
-  const undo: Action | undefined = written.backup ? { type: 'restore', name: fileName(written.backup) } : undefined
-  return { ok: true, message: `Removed "${ref.name}" from ${tilde(paths.home, ref.file)}. A backup was made first.`, undo }
+  return { ok: true, message: `Removed "${ref.name}" from ${tilde(paths.home, ref.file)}. A backup was made first.`, undo: written.restore(ref.file) }
 }
 
 /**
  * Adds the server, unchanged, to Copilot's MCP file of the destination, then (for a move) deletes it from its
- * own file. Both files are checked before either is written, so a stale view writes nothing.
+ * own file: one guarded change, so a stale view writes nothing and a failed delete is `partial`.
  */
 async function moveServer(
-  fs: FileSystem,
+  deps: ChangeDeps,
   paths: CopilotPaths,
-  clock: Clock,
   ref: Ref & { kind: 'mcp' },
   project: string | null,
   projects: string[],
@@ -101,33 +138,13 @@ async function moveServer(
   }
   const file = ownPlace(paths, 'mcp', project)
   if (file === ref.file) return { ok: false, reason: 'same-place', message: `"${ref.name}" is already there.` }
-  // A project file is shared through the repository: a literal token in env or headers must not land there.
-  if (project !== null && hasLiteralSecret(ref.config)) {
-    return {
-      ok: false,
-      reason: 'secret',
-      message: `"${ref.name}" has literal env or header values. Replace them with \${VAR} references first: a project file is shared with the team.`
-    }
-  }
-  if (project !== null && commandLineSecret(ref.config)) {
-    return {
-      ok: false,
-      reason: 'secret',
-      message: `"${ref.name}" has a secret-looking value in its args or url. Move it into an env value with a \${VAR} reference first: a project file is shared with the team.`
-    }
-  }
-  for (const path of [file, ref.file]) {
-    if (versionOf(await fs.readText(path)) !== (versions[path] ?? '')) return CHANGED
-  }
-
-  const added = await editJsonFile(fs, paths.store, { file, version: versions[file] ?? '', edit: (json) => addServer(json, ref, file) }, clock)
-  if (!added.ok) return added
-  if (copy) return { ok: true, file }
-  const removed = await editJsonFile(fs, paths.store, { file: ref.file, version: versions[ref.file] ?? '', edit: (json) => deleteServer(json, ref) }, clock)
-  if (!removed.ok) {
-    return { ok: false, reason: 'partial', message: `Copied "${ref.name}" to ${file}, but it is still in ${ref.file}: ${removed.message}` }
-  }
-  return { ok: true, file }
+  // The file is written as JSON, not through a command line; a project file is shared through the repository.
+  const admitted = admitMcp(copilotMcpConfig(ref.name, ref.config), project === null ? COPILOT_PRIVATE_FILE : COPILOT_TEAM_FILE)
+  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : { ok: false, reason: 'not-movable', message: admitted.message }
+  const add = { effect: { kind: 'json' as const, file, edit: (json: Json) => addServer(json, ref, file) } }
+  const remove = { effect: { kind: 'json' as const, file: ref.file, edit: (json: Json) => deleteServer(json, ref) } }
+  const written = await guardedChange(deps, { files: copy ? [file] : [file, ref.file], versions, steps: copy ? [add] : [add, remove] })
+  return written.ok ? { ok: true, file } : written
 }
 
 function addServer(json: Json, ref: Ref & { kind: 'mcp' }, file: string): string | void {
@@ -140,36 +157,4 @@ function addServer(json: Json, ref: Ref & { kind: 'mcp' }, file: string): string
 function deleteServer(json: Json, ref: Ref & { kind: 'mcp' }): string | void {
   if (!isObject(json.mcpServers) || !Object.hasOwn(json.mcpServers, ref.name)) return `"${ref.name}" is no longer in ${ref.file}.`
   delete json.mcpServers[ref.name]
-}
-
-/** True when the args or the url hold a value that looks like a credential (the toolkit's redaction rules). */
-function commandLineSecret(config: Json): boolean {
-  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word): word is string => typeof word === 'string')
-  return argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))
-}
-
-/** True when env or headers hold a value that is not a `$VAR` / `${VAR}` reference. */
-function hasLiteralSecret(config: Json): boolean {
-  return ['env', 'headers'].some(
-    (field) => isObject(config[field]) && Object.values(config[field]).some((value) => typeof value !== 'string' || !value.includes('$'))
-  )
-}
-
-/**
- * Puts a backup back: a trashed skill or agent into its Copilot folder, or an MCP file this app writes.
- * restoreFile backs up the current file first, so a restore can itself be undone.
- */
-async function restore(fs: FileSystem, paths: CopilotPaths, clock: Clock, projects: string[], name: string, versions: Record<string, string>): Promise<ActionResult> {
-  const everywhere = [null, ...projects]
-  if (isTrashName(name)) {
-    const places = everywhere.flatMap((project) => [ownPlace(paths, 'skills', project), ownPlace(paths, 'agents', project)])
-    const restored = await restoreTrash(fs, paths.store, name, places, OWNER)
-    return restored.ok ? { ok: true, message: `Put ${tilde(paths.home, restored.target)} back.` } : restored
-  }
-  const writable = new Set(everywhere.map((project) => ownPlace(paths, 'mcp', project)))
-  const target = backupTarget(paths.store, name) ?? ''
-  const guard = async (file: string) => (writable.has(file) ? null : { ok: false as const, reason: 'refused', message: `${file} is not a file this app writes for ${OWNER}.` })
-  const restored = await restoreFile(fs, paths.store, { name, version: versions[target] ?? '' }, clock, guard)
-  if (!restored.ok) return restored
-  return { ok: true, message: `Restored ${tilde(paths.home, target)} from the backup.`, undo: { type: 'restore', name: fileName(restored.backup) } }
 }

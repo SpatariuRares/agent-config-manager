@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { backUp, backupTarget, listAllBackups, listBackups, restoreFile } from './backups.ts'
-import { versionOf } from './json.ts'
+import { backUp, backupTarget, listAllBackups, listBackups } from './backups.ts'
 import { appBackupDir } from './paths.ts'
 import { fakeFs } from './test-support.ts'
 
@@ -26,19 +25,4 @@ test('an alias names a well-known file; a name with an alias the store does not 
   assert.deepEqual(await listBackups(fs, aliased), ['settings.2026-11-24T10-00-00-000Z.json'])
   assert.equal(backupTarget(aliased, 'other.2026-11-24T10-00-00-000Z.json'), null)
   assert.equal(backupTarget({ dir: '/b' }, 'toString.2026-11-24T10-00-00-000Z.json'), null)
-})
-
-test('restoring a file refuses a stale view and what the guard refuses, else backs the current file up first', async () => {
-  const fs = fakeFs({ '/home/.codex/a.json': 'old' })
-  const name = (await backUp(fs, store, '/home/.codex/a.json', 'old', clock)).slice(store.dir.length + 1)
-  fs.files['/home/.codex/a.json'] = 'new'
-  const stale = await restoreFile(fs, store, { name, version: versionOf('old') }, clock)
-  assert.equal(stale.ok === false && stale.reason, 'changed')
-  const guarded = await restoreFile(fs, store, { name, version: versionOf('new') }, clock, async () => ({ ok: false, reason: 'owned', message: 'no' }))
-  assert.equal(guarded.ok === false && guarded.reason, 'owned')
-  assert.equal(fs.files['/home/.codex/a.json'], 'new')
-  const restored = await restoreFile(fs, store, { name, version: versionOf('new') }, () => new Date('2026-11-24T12:00:00.000Z'))
-  assert.ok(restored.ok)
-  assert.equal(fs.files['/home/.codex/a.json'], 'old')
-  assert.equal(fs.files[restored.backup], 'new')
 })

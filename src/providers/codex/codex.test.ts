@@ -4,7 +4,8 @@ import { test } from 'node:test'
 import type { Action, ActionResult, Item, View } from '../../adapters/view.ts'
 import { routeAction, routeView } from '../router.ts'
 import { fakeExec, fakeFs, providerContract } from '../testing.ts'
-import { itemKey, type ProviderDeps } from '../types.ts'
+import { itemKey } from '../item-index.ts'
+import { type ProviderDeps } from '../types.ts'
 import { CODEX_PROJECT_SCOPES, CODEX_SUPPORTS, codexProvider } from './index.ts'
 
 const HOME = '/home'
@@ -343,7 +344,7 @@ test('MCP remove keeps no undo, and says why, when `codex mcp add` cannot recrea
     }
   })
   let view = await viewOf(m.deps)
-  for (const [name, why] of [['context7', /only stdio servers/], ['off', /enabled/]] as const) {
+  for (const [name, why] of [['context7', /Only stdio servers/], ['off', /enabled/]] as const) {
     const answer = await act(m.deps, view, { type: 'remove', key: named(view, 'mcp', name).key })
     assert.equal(answer.result.ok, true, answer.result.message)
     assert.equal((answer.result as ActionResult & { ok: true }).undo, undefined, name)
@@ -390,6 +391,16 @@ test('MCP: a move that is not a copy, an uncopyable server and a user server nev
   assert.equal((env.result as ActionResult & { ok: false }).reason, 'not-movable')
   const project = await act(m.deps, view, { type: 'remove', key: named(view, 'mcp', 'shop-db', SHOP).key })
   assert.equal((project.result as ActionResult & { ok: false }).reason, 'not-removable')
+  assert.deepEqual(m.exec.calls, [])
+  assert.deepEqual(m.writes, [])
+})
+
+test('MCP copy refuses when the project config.toml it copies from changed since the view: no backup, no CLI', async () => {
+  const m = machine()
+  const view = await viewOf(m.deps)
+  m.fs.files[`${SHOP}/.codex/config.toml`] = m.fs.files[`${SHOP}/.codex/config.toml`].replace('"--readonly"', '"--write"')
+  const answer = await act(m.deps, view, { type: 'move', key: named(view, 'mcp', 'shop-db', SHOP).key, to: { project: null }, copy: true })
+  assert.equal((answer.result as ActionResult & { ok: false }).reason, 'changed')
   assert.deepEqual(m.exec.calls, [])
   assert.deepEqual(m.writes, [])
 })

@@ -1,8 +1,8 @@
 // Runs plugin and skill updates through their official CLIs and reports what changed, read back from the
 // files those CLIs own. Nothing here accepts a marketplace-declared command on the user's behalf.
-import { isObject, type Json } from './inventory.ts'
-import type { FileSystem } from '../../core/ports.ts'
-import type { ClaudePaths, PluginCli } from './ports.ts'
+import type { ProviderDeps } from '../toolkit.ts'
+import { pluginUpdate, skillsUpdate } from './cli.ts'
+import { claudePaths, isObject, type Json } from './inventory.ts'
 import { readInstalls, readSkillLock } from './update-sources.ts'
 
 export interface VersionChange {
@@ -22,13 +22,8 @@ export type PluginUpdateResult =
  * is passed only when the user confirmed exactly that command; when the CLI shows one to approve, the update
  * stops there and returns it.
  */
-export async function updatePlugin(
-  fs: FileSystem,
-  cli: PluginCli,
-  paths: ClaudePaths,
-  id: string,
-  acceptCommand?: string
-): Promise<PluginUpdateResult> {
+export async function updatePlugin({ fs, exec, home }: ProviderDeps, id: string, acceptCommand?: string): Promise<PluginUpdateResult> {
+  const paths = claudePaths(home)
   const records = (await readInstalls(fs, paths)).get(id) ?? []
   if (records.length === 0) return { ok: false, reason: 'unknown-plugin', message: `${id} is not installed.`, changes: [] }
   const failures: string[] = []
@@ -38,7 +33,7 @@ export async function updatePlugin(
       failures.push(`${record.scope}: no project folder recorded, skipped`)
       continue
     }
-    const { ok, output } = await cli.pluginUpdate(id, record.scope, record.project, acceptCommand)
+    const { ok, output } = await pluginUpdate(exec, id, record.scope, record.project, acceptCommand)
     const shown = shownCommand(output)
     if (shown !== null) return { ok: false, reason: 'needs-confirmation', ...shown }
     if (ok) ran.push(record)
@@ -105,10 +100,11 @@ export type SkillUpdateResult =
   | { ok: false; reason: 'cli-failed'; message: string }
 
 /** Updates a skill installed by the `skills` CLI, and reads its content hash from the lock before and after. */
-export async function updateSkill(fs: FileSystem, cli: PluginCli, paths: ClaudePaths, name: string): Promise<SkillUpdateResult> {
+export async function updateSkill({ fs, exec, home }: ProviderDeps, name: string): Promise<SkillUpdateResult> {
+  const paths = claudePaths(home)
   const hashOf = async () => (await readSkillLock(fs, paths)).find((skill) => skill.name === name)?.hash ?? null
   const before = await hashOf()
-  const { ok, output } = await cli.skillsUpdate(name)
+  const { ok, output } = await skillsUpdate(exec, name)
   if (!ok) return { ok: false, reason: 'cli-failed', message: output.trim() }
   return { ok: true, before, after: await hashOf() }
 }

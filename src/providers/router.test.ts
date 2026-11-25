@@ -137,11 +137,19 @@ test('a class the agent does not have is refused even if its supports names it',
   assert.deepEqual(a.calls, [])
 })
 
-test('backup actions belong to no class: allowed when any class lists them', async () => {
+test('backup actions belong to no class: allowed when any class lists them, and run from the declared backups', async () => {
+  const fs = fakeFs({ '/home/.a/settings.json': '{}' })
+  const machine: ProviderDeps = { ...deps, fs }
   const a = stub('a', { supports: { mcp: ['restore', 'snapshot'] } })
-  ok(await routeAction(deps, [a.provider], request('a', { type: 'snapshot' })))
-  ok(await routeAction(deps, [a.provider], request('a', { type: 'restore', name: 'x.json' })))
-  assert.deepEqual(a.calls.map((call) => call.action.type), ['snapshot', 'restore'])
+  const plan = { owner: 'Agent a', store: { dir: '/home/.a/backups' }, files: ['/home/.a/settings.json'], entryFolders: [], say: (path: string) => path }
+  const declared: AgentProvider = { ...a.provider, backups: async () => plan }
+  const snapshot = await routeAction(machine, [declared], request('a', { type: 'snapshot' }))
+  assert.deepEqual(snapshot.result, { ok: true, message: 'Backed up 1 settings file to /home/.a/backups.' })
+  const unknown = await routeAction(machine, [declared], request('a', { type: 'restore', name: 'x.json' }))
+  assert.equal(unknown.result.ok === false && unknown.result.reason, 'unknown-backup')
+  const undeclared = await routeAction(machine, [a.provider], request('a', { type: 'snapshot' }))
+  assert.equal(undeclared.result.ok === false && undeclared.result.reason, 'unsupported')
+  assert.deepEqual(a.calls, [], 'runAction never sees a backup action')
 })
 
 test('a key that names no class is gone, an unknown type is unsupported, and a non-action is refused', async () => {

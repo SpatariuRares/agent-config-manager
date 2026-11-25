@@ -1,6 +1,6 @@
-// The backup store every provider writes through: a file backup before every write, a restorable trash for
-// removed folders and files, and the list of everything that can be put back. Each agent has its own store.
-import { versionOf } from './json.ts'
+// The backup store every provider writes through: a file backup before every write (made by the guarded change),
+// a restorable trash for removed folders and files, and the list of everything that can be put back. Each agent
+// has its own store; restore and snapshot run from it in ../providers/backup-actions.ts.
 import { occupied } from './paths.ts'
 import type { Clock, FileSystem } from './ports.ts'
 
@@ -23,9 +23,6 @@ export interface BackupInfo {
 export type TrashResult =
   | { ok: true; name: string; target: string }
   | { ok: false; reason: 'missing' | 'unknown-backup' | 'exists' | 'unknown-project'; message: string }
-
-export type Refusal = { ok: false; reason: string; message: string }
-export type RestoreResult = { ok: true; backup: string } | Refusal
 
 const STAMP = String.raw`\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?`
 /** `<alias or encoded path>.<stamp>[-n].json`: a file as it was before a write. */
@@ -76,32 +73,6 @@ export async function listAllBackups(fs: FileSystem, store: BackupStore): Promis
     .filter(isTrashName)
     .map((name) => ({ name, target: decodeURIComponent(TRASH_NAME.exec(name)?.[1] ?? ''), at: atOf(name), trash: true }))
   return [...files, ...trash].sort((a, b) => b.at - a.at || b.name.localeCompare(a.name))
-}
-
-/**
- * Puts a file backup back in place of its file, after backing up that file. `guard` refuses targets the agent
- * must not write (it runs after the name is known to be a backup); `version` is the view's version of the target.
- */
-export async function restoreFile(
-  fs: FileSystem,
-  store: BackupStore,
-  restore: { name: string; version: string },
-  clock: Clock,
-  guard: (target: string) => Promise<Refusal | null> = async () => null
-): Promise<RestoreResult> {
-  const { name } = restore
-  const target = backupTarget(store, name)
-  const text = target !== null && (await listBackups(fs, store)).includes(name) ? await fs.readText(`${store.dir}/${name}`) : null
-  if (target === null || text === null) return { ok: false, reason: 'unknown-backup', message: `${name} is not a known backup.` }
-  const refused = await guard(target)
-  if (refused !== null) return refused
-  const current = await fs.readText(target)
-  if (versionOf(current) !== restore.version) {
-    return { ok: false, reason: 'changed', message: 'The settings file changed since it was read. Refresh and try again.' }
-  }
-  const backup = await backUp(fs, store, target, current ?? '{}\n', clock)
-  await fs.writeText(target, text)
-  return { ok: true, backup }
 }
 
 /** Moves a skill folder or agent file (a symlink as a link) into the trash. */

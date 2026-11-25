@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 import type { CliResult, Http, HttpResult } from '../core/ports.ts'
-import { buildView, checkUpdates, fakeCli, fakeFs, paths, runAction, type FakeReplies } from '../providers/claude/test-support.ts'
+import { buildView, checkUpdates, fakeClaude, fakeFs, runAction, type FakeReplies } from '../providers/claude/test-support.ts'
 import { fetchHttp } from './updates.ts'
 import type { Action, ActionAnswer, Item, UpdatesAnswer, View } from './view.ts'
 
@@ -80,7 +80,7 @@ function setup(replies: FakeReplies = {}, extra: Record<string, string> = {}) {
     },
     { '/home/.claude/skills/grill': '../../.agents/skills/grill', '/opt/homebrew/bin/engram': '../Cellar/engram/3.7.2/bin/engram' }
   )
-  return { fs, cli: fakeCli([], replies), paths, clock: () => new Date('2026-11-24T10:00:00.000Z') }
+  return { fs, exec: fakeClaude(fs, [], replies), clock: () => new Date('2026-11-24T10:00:00.000Z') }
 }
 
 /** Answers from a url -> result map, recording every url asked. */
@@ -234,7 +234,7 @@ test('plugins: without a version, the installed commit is compared with the git 
   const deps = setup({ git })
   const answer = await checkUpdates({ ...deps, http: fakeHttp({}) })
   const v = await view(deps)
-  assert.deepEqual(deps.cli.calls, [`git rev-parse HEAD b0b0b0b0b0b0b0b0:plugins/b HEAD:plugins/b @ ${MARKET}`])
+  assert.deepEqual(deps.exec.calls, [`git rev-parse HEAD b0b0b0b0b0b0b0b0:plugins/b HEAD:plugins/b @ ${MARKET}`])
   assert.deepEqual(answer.statuses[keyOf(v, 'plugins', 'b')], { status: 'available', latest: head.slice(0, 12) })
 
   trees['HEAD:plugins/b'] = 'tree-old'
@@ -250,7 +250,7 @@ test('plugins: otherwise unknown, "checked when you update"', async () => {
   for (const name of ['b', 'c', 'x']) {
     assert.deepEqual(answer.statuses[keyOf(v, 'plugins', name)], { status: 'unknown', latest: null, note: 'checked when you update' }, name)
   }
-  assert.ok(!deps.cli.calls.some((call) => call.includes('/marketplaces/ext')), 'no git in a directory marketplace')
+  assert.ok(!deps.exec.calls.some((call) => call.includes('/marketplaces/ext')), 'no git in a directory marketplace')
 })
 
 test('manual sources are unknown with their note; items without a source get no status and no network call', async () => {
@@ -305,7 +305,7 @@ test('plugin update: runs claude plugin update without -y in the install folder,
   })
   const v = await view(deps)
   const result = okResult(await run(deps, { type: 'update', key: keyOf(v, 'plugins', 'p', SHOP) }))
-  assert.deepEqual(deps.cli.calls, [`plugin update p@m --scope project --json @ ${SHOP}`])
+  assert.deepEqual(deps.exec.calls, [`claude plugin update p@m --scope project --json @ ${SHOP}`])
   assert.match(result.message, /Updated plugin "p" from 1\.0\.0 to 1\.1\.0\./)
   assert.match(result.message, /Restart Claude Code/)
 })
@@ -318,14 +318,14 @@ test('plugin update: a command that needs approval is never accepted on its own;
   const result = failed(await run(deps, { type: 'update', key }))
   assert.equal(result.reason, 'needs-confirmation')
   assert.deepEqual(result.confirm, { command: 'curl -s https://x.example/key', action: { type: 'update', key, acceptCommand: 'abc123' } })
-  assert.ok(deps.cli.calls.every((call) => !/ -y\b|--accept-command/.test(call)), deps.cli.calls.join('\n'))
+  assert.ok(deps.exec.calls.every((call) => !/ -y\b|--accept-command/.test(call)), deps.exec.calls.join('\n'))
 })
 
 test('plugin update: with acceptCommand, passes --accept-command with that sha', async () => {
   const deps = setup()
   const v = await view(deps)
   const result = okResult(await run(deps, { type: 'update', key: keyOf(v, 'plugins', 'a'), acceptCommand: 'abc123' }))
-  assert.deepEqual(deps.cli.calls, ['plugin update a@m --scope user --json --accept-command abc123 @ -'])
+  assert.deepEqual(deps.exec.calls, ['claude plugin update a@m --scope user --json --accept-command abc123 @ -'])
   assert.match(result.message, /plugin "a" is already at 1\.0\.0/i)
 })
 
@@ -348,8 +348,19 @@ test('skill update: runs npx skills update globally and reports the new content 
   })
   const v = await view(deps)
   const result = okResult(await run(deps, { type: 'update', key: keyOf(v, 'skills', 'tdd') }))
-  assert.deepEqual(deps.cli.calls, ['npx -y skills update tdd -g -y'])
+  assert.deepEqual(deps.exec.calls, ['npx -y skills update tdd -g -y @ -'])
   assert.match(result.message, /Updated skill "tdd" from mattpocock\/skills/)
+})
+
+test('skill update: a lock name that looks like an option is refused before npx runs', async () => {
+  const odd = structuredClone(lock) as { skills: Record<string, unknown> }
+  odd.skills = { '-g': lock.skills.tdd }
+  const deps = setup({}, { [LOCK]: JSON.stringify(odd), '/home/.claude/skills/-g/SKILL.md': '---\nname: -g\n---\n' })
+  const v = await view(deps)
+  const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'skills', '-g') }))
+  assert.equal(result.reason, 'cli-failed')
+  assert.match(result.message, /cannot start with "-"/)
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('npm MCP update: backs up, then removes and re-adds the server with the latest pinned version in its scope', async () => {
@@ -357,9 +368,9 @@ test('npm MCP update: backs up, then removes and re-adds the server with the lat
   const v = await view(deps)
   const mcp = deps.fs.files[`${SHOP}/.mcp.json`]
   const result = okResult(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'team', SHOP) }))
-  assert.deepEqual(deps.cli.calls, [
-    `mcp remove team --scope project @ ${SHOP}`,
-    `mcp add-json team {"command":"npx","args":["--package","team-mcp@3.1.0","team"]} --scope project @ ${SHOP}`
+  assert.deepEqual(deps.exec.calls, [
+    `claude mcp remove team --scope project @ ${SHOP}`,
+    `claude mcp add-json team {"command":"npx","args":["--package","team-mcp@3.1.0","team"]} --scope project @ ${SHOP}`
   ])
   assert.equal(deps.fs.files[`${BACKUPS}/${encodeURIComponent(`${SHOP}/.mcp.json`)}.${STAMP}.json`], mcp)
   assert.match(result.message, /Updated MCP server "team" from team-mcp@3\.0\.0 to 3\.1\.0/)
@@ -367,15 +378,15 @@ test('npm MCP update: backs up, then removes and re-adds the server with the lat
 
 test('npm MCP update: the --package= form keeps its shape; a failed re-add is reported as partial', async () => {
   const deps = { ...setup(), http: fakeHttp({ [NPM('@upstash/context7-mcp')]: okJson({ version: '2.3.0' }) }) }
-  deps.cli = fakeCli(['mcp-add:user'])
+  deps.exec = fakeClaude(deps.fs, ['mcp-add:user'])
   const v = await view(deps)
   const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'context7') }))
-  assert.deepEqual(deps.cli.calls, [
-    'mcp remove context7 --scope user @ -',
-    'mcp add-json context7 {"command":"npx","args":["-y","--package=@upstash/context7-mcp@2.3.0","--","context7-mcp"]} --scope user @ -'
+  assert.deepEqual(deps.exec.calls, [
+    'claude mcp remove context7 --scope user @ -',
+    'claude mcp add-json context7 {"command":"npx","args":["-y","--package=@upstash/context7-mcp@2.3.0","--","context7-mcp"]} --scope user @ -'
   ])
   assert.equal(result.reason, 'partial')
-  assert.match(result.message, /Removed MCP server "context7".*but adding it back.*failed/s)
+  assert.match(result.message, /^claude mcp remove for context7 worked; then claude mcp add-json for context7 failed: cannot mcp-add in user\. The backups made first/)
   assert.equal(deps.fs.files[`${BACKUPS}/${encodeURIComponent('/home/.claude.json')}.${STAMP}.json`], JSON.stringify(userConfig))
 })
 
@@ -383,7 +394,7 @@ test('npm MCP update: already at the latest version changes nothing', async () =
   const deps = { ...setup(), http: fakeHttp({ [NPM('mem-mcp')]: okJson({ version: '1.4.0' }) }) }
   const v = await view(deps)
   const result = okResult(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'mem') }))
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
   assert.match(result.message, /already at the latest version \(1\.4\.0\)/)
 })
 
@@ -395,7 +406,7 @@ test('manual sources and items without a source are refused as unsupported', asy
   assert.match(brew.message, /brew upgrade engram/)
   const agent = failed(await run(deps, { type: 'update', key: keyOf(v, 'agents', 'helper') }))
   assert.equal(agent.reason, 'unsupported')
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('update all: updates each key in turn, skips the ones that need confirmation, and lists every outcome', async () => {
@@ -404,10 +415,10 @@ test('update all: updates each key in turn, skips the ones that need confirmatio
   const v = await view(deps)
   const keys = [keyOf(v, 'plugins', 'a'), keyOf(v, 'plugins', 'b'), keyOf(v, 'plugins', 'c')]
   const result = failed(await run(deps, { type: 'updateAll', kind: 'plugins', keys }))
-  assert.deepEqual(deps.cli.calls, [
-    'plugin update a@m --scope user --json @ -',
-    'plugin update b@m --scope user --json @ -',
-    'plugin update c@ext --scope user --json @ -'
+  assert.deepEqual(deps.exec.calls, [
+    'claude plugin update a@m --scope user --json @ -',
+    'claude plugin update b@m --scope user --json @ -',
+    'claude plugin update c@ext --scope user --json @ -'
   ])
   assert.equal(result.reason, 'partial')
   assert.equal(result.confirm, undefined)
@@ -420,7 +431,7 @@ test('update all: updates each key in turn, skips the ones that need confirmatio
 test('refresh marketplaces runs claude plugin marketplace update', async () => {
   const deps = setup()
   const result = okResult(await run(deps, { type: 'refreshMarketplaces' }))
-  assert.deepEqual(deps.cli.calls, ['plugin marketplace update'])
+  assert.deepEqual(deps.exec.calls, ['claude plugin marketplace update @ -'])
   assert.match(result.message, /marketplaces/i)
 })
 
@@ -428,7 +439,7 @@ test('npm MCP update: a padded registry version is pinned trimmed', async () => 
   const deps = { ...setup(), http: fakeHttp({ [NPM('team-mcp')]: okJson({ version: ' 3.1.0\n' }) }) }
   const v = await view(deps)
   okResult(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'team', SHOP) }))
-  assert.match(deps.cli.calls[1], /"team-mcp@3\.1\.0"/)
+  assert.match(deps.exec.calls[1], /"team-mcp@3\.1\.0"/)
 })
 
 test('npm MCP update: a registry version that is not semver is refused, not called up to date', async () => {
@@ -437,7 +448,7 @@ test('npm MCP update: a registry version that is not semver is refused, not call
   const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'mcp', 'team', SHOP) }))
   assert.equal(result.reason, 'check-failed')
   assert.match(result.message, /cannot be compared/)
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('plugin update: an acceptCommand that is not a sha256 is refused before running anything', async () => {
@@ -445,5 +456,5 @@ test('plugin update: an acceptCommand that is not a sha256 is refused before run
   const v = await view(deps)
   const result = failed(await run(deps, { type: 'update', key: keyOf(v, 'plugins', 'a'), acceptCommand: '--yes' }))
   assert.equal(result.reason, 'refused')
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })

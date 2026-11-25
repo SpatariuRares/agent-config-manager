@@ -2,23 +2,26 @@
 // per project. Read-only; never opens .env, credential, history or log files. Sources are listed in ./index.ts.
 import type { Item, Kind } from '../../adapters/view.ts'
 import {
-  argsHaveSecret,
+  admitMcp,
+  describeMcp,
   existingProjects,
   isObject,
+  itemIndex,
   itemKey,
   listAllBackups,
   readAgents,
   readSkills,
-  redactArgs,
   redactCommand,
   redactUrl,
   sameFolder,
-  urlHasSecret,
   versionOf,
   type FileSystem,
+  type ItemIndex,
   type Json,
+  type McpConfig,
   type ProviderView
 } from '../toolkit.ts'
+import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { agentDir, settingsOf, skillDirs, type GeminiPaths } from './paths.ts'
 
 export const GEMINI = 'gemini'
@@ -199,47 +202,35 @@ export interface McpServer {
   config: Json
 }
 
-/** The transport Gemini CLI uses (mcp-client.ts createUrlTransport): a url without a type is streamable HTTP. */
+/**
+ * The transport a Gemini CLI server declares (mcp-client.ts createUrlTransport): `httpUrl` is streamable HTTP, a
+ * `url` takes its `type` (none is streamable HTTP), `tcp` is a websocket, and a command is stdio unless it says
+ * otherwise. A declared type is kept as written, so one the destination cannot carry is refused, never rewritten.
+ */
 export function transportOf(config: Json): string {
-  if (typeof config.httpUrl === 'string') return 'http'
-  if (typeof config.url === 'string') return config.type === 'sse' ? 'sse' : 'http'
+  const declared = config.type === undefined || config.type === null ? null : String(config.type)
+  if (typeof config.httpUrl === 'string') return declared ?? 'http'
+  if (typeof config.url === 'string') return declared ?? 'http'
   if (typeof config.tcp === 'string') return 'websocket'
-  return 'stdio'
+  return declared ?? 'stdio'
 }
 
-/** What the server runs or reaches, with anything secret-looking redacted. Env values and headers never appear. */
-export function targetOf(config: Json): string {
-  const url = typeof config.httpUrl === 'string' ? config.httpUrl : typeof config.url === 'string' ? config.url : null
-  if (url !== null) return redactUrl(url)
-  if (typeof config.tcp === 'string') return redactUrl(config.tcp)
-  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word) => typeof word === 'string' && word !== '')
-  return redactArgs(words).join(' ')
+/** Keys that cannot go together: `httpUrl` with `url` (which one Gemini CLI runs), or `httpUrl` with a type other than http. */
+function malformedKeys(config: Json): string[] {
+  const set = (key: string) => config[key] !== undefined && config[key] !== null
+  if (!set('httpUrl')) return []
+  if (set('url')) return ['httpUrl', 'url']
+  return set('type') && config.type !== 'http' ? ['httpUrl', 'type'] : []
 }
 
-/** Keys `gemini mcp add` can write back exactly (commands/mcp/add.ts). */
-const ADDABLE = new Set(['command', 'args', 'url', 'type', 'timeout', 'trust', 'description'])
-
-/** Why `gemini mcp add` cannot recreate this server elsewhere, or null when it can. */
-export function moveRefusal(config: Json): string | null {
-  const filled = (value: unknown) => isObject(value) && Object.keys(value).length > 0
-  if (filled(config.env) || filled(config.headers)) {
-    return 'It has env values or headers: gemini mcp add takes them on its command line, where other programs can read them. Move it by hand.'
-  }
-  const other = Object.keys(config).filter((key) => !ADDABLE.has(key) && !(key === 'env' || key === 'headers'))
-  if (other.length > 0) return `gemini mcp add cannot write its ${other.join(', ')} setting${other.length > 1 ? 's' : ''}.`
-  if (config.type !== undefined && !['stdio', 'sse', 'http'].includes(config.type)) return `gemini mcp add has no ${String(config.type)} transport.`
-  if (typeof config.url !== 'string' && typeof config.command !== 'string') return 'It has neither a command nor a url.'
-  if (config.args !== undefined && !(Array.isArray(config.args) && config.args.every((arg: unknown) => typeof arg === 'string'))) return 'Its args are not all text.'
-  if (config.timeout !== undefined && typeof config.timeout !== 'number') return 'Its timeout is not a number.'
-  if (config.trust !== undefined && typeof config.trust !== 'boolean') return 'Its trust is not true or false.'
-  if (config.description !== undefined && typeof config.description !== 'string') return 'Its description is not text.'
-  // Checked last, so the reason names a real fix. gemini mcp add takes args and url on its command line, and a
-  // project settings file is shared with the team: neither may receive a token.
-  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word) => typeof word === 'string')
-  if (argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))) {
-    return 'Its args or url hold a secret-looking value: gemini mcp add would put it on a command line other programs can read, and a project settings file is shared with the team. Move it by hand, with the secret in an environment variable.'
-  }
-  return null
+/**
+ * A Gemini CLI server as McpConfig: the transport transportOf() reads, and its address (`httpUrl`, `url` or
+ * `tcp`) as the url. `type` only names the transport; every other key (timeout, trust, cwd...) is `rest`.
+ */
+export function geminiMcpConfig(name: string, config: Json): McpConfig {
+  const { command, args, env, url, httpUrl, tcp, type, headers, ...rest } = config
+  const malformed = malformedKeys(config)
+  return { name, transport: transportOf(config), command, args, url: httpUrl ?? url ?? tcp, env, headers, rest, ...(malformed.length > 0 ? { malformed } : {}) }
 }
 
 // --------------------------------------------------------------------------------------------------- the setup
@@ -253,7 +244,8 @@ export type Ref =
 
 export interface Setup {
   view: ProviderView
-  refs: Map<string, Ref>
+  /** The view's items, and the way back from a key to the item and its ref. */
+  index: ItemIndex<Ref>
   /** Known projects: those in ~/.gemini/projects.json that exist, without the home folder. */
   projects: string[]
   /** Every settings place: global first, then each project, with its parsed file. */
@@ -268,13 +260,8 @@ const off = (description: string, reason: string | null) => (reason === null ? d
 export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Setup> {
   const versions: Record<string, string> = {}
   const problems: string[] = []
-  const items: Item[] = []
-  const refs = new Map<string, Ref>()
-  const add = (item: Omit<Item, 'agent'>, ref: Ref) => {
-    if (refs.has(item.key)) return
-    items.push({ agent: GEMINI, ...item })
-    refs.set(item.key, ref)
-  }
+  const index = itemIndex<Ref>()
+  const add = (item: Omit<Item, 'agent'>, ref: Ref) => void index.add({ agent: GEMINI, ...item }, ref)
 
   const registry = (await readObject(fs, paths.projects, versions, problems, false)).json
   const candidates = isObject(registry.projects) ? Object.keys(registry.projects) : []
@@ -376,8 +363,11 @@ export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Set
       const blocked = excluded.has(id) ? 'mcp.excluded' : allowed.size > 0 && !allowed.has(id) ? 'not in mcp.allowed' : null
       const enabled = !(isObject(mcpEnablement[id]) && mcpEnablement[id].enabled === false)
       const reason = blocked ?? (enabled ? null : 'gemini mcp disable')
-      const target = targetOf(config)
-      const refusal = moveRefusal(config)
+      const mcp = describeMcp(geminiMcpConfig(name, config))
+      const target = mcp.target
+      // A global server can only go to a project (a team file); a project's can also go global.
+      const admitted = admitMcp(geminiMcpConfig(name, config), project === null ? GEMINI_ADD_TEAM : GEMINI_ADD)
+      const refusal = admitted.ok ? null : admitted.message
       const server: McpServer = { name, project, file: place.file, config }
       add(
         {
@@ -391,7 +381,7 @@ export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Set
           movable: refusal === null,
           ...(refusal === null ? {} : { notMovableReason: refusal }),
           removable: true,
-          mcp: { transport: transportOf(config), target }
+          mcp
         },
         { kind: 'mcp', server, blocked, enabled }
       )
@@ -432,11 +422,11 @@ export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Set
 
   const backups = (await listAllBackups(fs, paths.backups)).map(({ name, target, at }) => ({ name, target, at }))
   const order: Kind[] = ['plugins', 'skills', 'agents', 'mcp', 'hooks']
-  items.sort(
+  const built = index.build(
     (a, b) =>
       order.indexOf(a.kind) - order.indexOf(b.kind) ||
       (a.project === null ? 0 : 1) - (b.project === null ? 0 : 1) ||
       (a.project ?? '').localeCompare(b.project ?? '')
   )
-  return { view: { items, projects, versions, backups, problems }, refs, projects, places, enablement }
+  return { view: { items: built.items, projects, versions, backups, problems }, index: built, projects, places, enablement }
 }

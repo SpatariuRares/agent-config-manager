@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ActionResult } from '../../adapters/view.ts'
 import { fakeExec, fakeFs } from '../testing.ts'
-import { itemKey, type PortableMcp, type PortableSkill, type ProviderDeps } from '../types.ts'
+import { itemKey } from '../item-index.ts'
+import { type PortableMcp, type PortableSkill, type ProviderDeps } from '../types.ts'
 import { codexProvider } from './index.ts'
 
 const HOME = '/home/me'
@@ -117,7 +118,7 @@ test('Codex import refuses what `codex mcp add` cannot carry: env, an http serve
   const m = machine()
   const env = await importInto(m.deps, { ...STDIO, env: { DOCS_TOKEN: '${DOCS_TOKEN}' } })
   assert.equal(refused(env).reason, 'not-portable')
-  assert.match(env.message, /cannot carry env/)
+  assert.match(env.message, /cannot take \(env\)/)
   const http = await importInto(m.deps, { kind: 'mcp', name: 'web', transport: 'http', url: 'https://web.example/mcp' })
   assert.equal(refused(http).reason, 'not-portable')
   const secret = await importInto(m.deps, { ...STDIO, args: ['--token', 'sk-live-0123456789abcdef'] })
@@ -134,7 +135,7 @@ test('Codex import refuses a server name already in config.toml, and reports a C
   assert.equal(refused(await importInto(taken.deps, { ...STDIO, name: 'codegraph' })).reason, 'exists')
   assert.deepEqual(taken.exec.calls, [])
   const silent = machine(false)
-  assert.equal(refused(await importInto(silent.deps, STDIO)).reason, 'cli-failed')
+  assert.equal(refused(await importInto(silent.deps, STDIO)).reason, 'did-not-change')
 })
 
 test('Codex import: a skill folder is copied into ~/.codex/skills or <project>/.codex/skills, with an undo that removes it', async () => {
