@@ -14,6 +14,7 @@ import {
   redactCommand,
   redactUrl,
   restoreFile,
+  shellQuote,
   tilde,
   urlHasSecret,
   versionOf,
@@ -198,7 +199,7 @@ async function uninstallExtension(ctx: Context, extension: Extension) {
   if (!ran.ok) return ran
   if ((await ctx.deps.fs.realPath(extension.dir)) !== null) return unchanged(argv, extension.name, extension.dir, ran.output, ctx.say)
   const source = extension.install.source
-  const again = source ? ` To install it again: gemini extensions install ${source.startsWith('/') ? source : redactUrl(source)}` : ''
+  const again = source ? ` To install it again: ${shellQuote(['gemini', 'extensions', 'install', source.startsWith('/') ? source : redactUrl(source)])}` : ''
   return done(`Uninstalled ${extension.name}.${again}`, restoreOf(recordBackup ?? undefined))
 }
 
@@ -252,7 +253,7 @@ async function reinstallExtension(ctx: Context, name: string, target: string, ac
   const extension = dir.slice(dir.lastIndexOf('/') + 1)
   if (argv === null) return refuse('unsupported', `${name} records no source that gemini extensions install can use, so ${extension} cannot be reinstalled from it.`)
   if ((await fs.realPath(dir)) !== null) return refuse('exists', `${ctx.say(dir)} is there already: ${extension} is installed.`)
-  const command = `gemini ${argv.join(' ')}`
+  const command = shellQuote(['gemini', ...argv])
   const sha = createHash('sha256').update(command).digest('hex')
   if (acceptCommand !== sha) {
     return {
@@ -286,11 +287,11 @@ async function updateExtension(ctx: Context, extension: Extension) {
   if (CONSENT_PROMPT.test(result.output)) {
     return refuse(
       'needs-consent',
-      `${extension.name} asks to approve new permissions, and this app never approves them for you. To review and approve them, run this in a terminal: gemini extensions update ${extension.name}`
+      `${extension.name} asks to approve new permissions, and this app never approves them for you. To review and approve them, run this in a terminal: ${shellQuote(['gemini', ...argv])}`
     )
   }
   if (!result.ok) {
-    return refuse('cli', `${named(argv, extension.name)} failed: ${tail(result.output) || 'no output'}. To see why, run this in a terminal: gemini extensions update ${extension.name}`)
+    return refuse('cli', `${named(argv, extension.name)} failed: ${tail(result.output) || 'no output'}. To see why, run this in a terminal: ${shellQuote(['gemini', ...argv])}`)
   }
   const ran = { output: result.output }
   const manifest = await objectAt(ctx.deps, `${extension.dir}/gemini-extension.json`, false)

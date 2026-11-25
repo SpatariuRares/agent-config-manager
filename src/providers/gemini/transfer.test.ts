@@ -142,3 +142,12 @@ test('Gemini import: a skill folder is copied into ~/.gemini/skills (Gemini CLI 
   assert.deepEqual(m.exec.calls, [], 'no CLI ran for a skill')
   assert.ok(HOME && SHOP_SETTINGS)
 })
+
+test('Gemini import: the remove hint of a copied skill names the folder it was copied to, shell-quoted', async () => {
+  const fixture = { ...files(), '/src/pdf tools;x/SKILL.md': '---\nname: pdf\n---\n' }
+  const m = withCli(fixture)
+  const result = await importInto(m, { kind: 'skills', name: 'pdf', dir: '/src/pdf tools;x', link: null })
+  assert.equal(result.ok, true, result.message)
+  assert.ok(m.fs.files[`${GEMINI}/skills/pdf tools;x/SKILL.md`])
+  assert.ok(result.message.endsWith(`To remove it: gemini skills uninstall 'pdf tools;x'`), result.message)
+})

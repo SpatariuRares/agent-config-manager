@@ -5,7 +5,7 @@ import type { EntryRef } from '../core/entries.ts'
 import { isObject, type Json } from '../core/json.ts'
 import { occupied } from '../core/paths.ts'
 import type { FileSystem } from '../core/ports.ts'
-import { argsHaveSecret, looksSecret, urlHasSecret } from '../core/redact.ts'
+import { argsHaveSecret, textHasSecret, urlHasSecret } from '../core/redact.ts'
 import type { Exported, PortableMcp, PortableSkill, Refusal } from './types.ts'
 
 const refuse = (reason: string, message: string): Refusal => ({ ok: false, reason, message })
@@ -75,18 +75,14 @@ export function mcpJson(item: PortableMcp, stdio: 'stdio' | 'local'): Json {
   return { type: item.transport, url: item.url, ...(item.headers ? { headers: { ...item.headers } } : {}) }
 }
 
-const REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g
+const REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/
 
 /**
- * A value that names an environment variable instead of holding a secret: it has a `${VAR}` reference, and what
- * is around it holds nothing secret-looking (`Bearer ${TOKEN}` is a reference; `${A}sk-live-...` is not).
+ * A value that names an environment variable instead of holding a secret: it has a `${VAR}` reference, and no word
+ * around it is secret-looking (`Bearer ${TOKEN}` is a reference; `${A}sk-live-...` and `${HOME}/ghp_...` are not).
  */
 export function isReference(value: string): boolean {
-  if (!value.match(REFERENCE)) return false
-  return value
-    .replace(REFERENCE, ' ')
-    .split(/\s+/)
-    .every((word) => word === '' || !looksSecret(word))
+  return REFERENCE.test(value) && !textHasSecret(value)
 }
 
 const ENTRIES = [

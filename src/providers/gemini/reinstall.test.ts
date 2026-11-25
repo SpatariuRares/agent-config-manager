@@ -127,3 +127,25 @@ test('L-A: a linked extension, or one whose source holds a secret, has no reinst
   assert.equal(undoOf(withSecret.result), undefined)
   assert.doesNotMatch(withSecret.result.message, /hunter2/)
 })
+
+test('L-A: the command shown to approve or to run by hand is shell-quoted; the CLI still gets the source as one argument', async () => {
+  const source = '/tmp/a b;$(id)'
+  const fixture = files()
+  fixture[INSTALL] = json({ source, type: 'local', ref: 'main' })
+  const m = withCli(fixture, () => ({ ok: false, output: 'not a folder' }))
+  const undo = undoOf((await uninstall(m)).result) as Action & { type: 'restore' }
+  assert.equal(undo?.type, 'restore')
+  const asked = (await act(m.deps, undo)).result as ActionResult & { ok: false }
+  const command = `gemini extensions install '/tmp/a b;$(id)' --ref main --consent`
+  assert.deepEqual(asked.confirm, { command, action: { type: 'restore', name: undo.name, acceptCommand: sha(command) } })
+  m.exec.calls.length = 0
+  let argv: readonly string[] = []
+  const reply = m.exec.run.bind(m.exec)
+  m.exec.run = async (name, args, cwd, options) => {
+    argv = args
+    return reply(name, args, cwd, options)
+  }
+  const failed = await act(m.deps, asked.confirm!.action)
+  assert.deepEqual(argv, ['extensions', 'install', source, '--ref', 'main', '--consent'])
+  assert.ok(failed.result.message.endsWith(`To try it in a terminal: ${command}`), failed.result.message)
+})

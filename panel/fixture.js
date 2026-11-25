@@ -643,7 +643,12 @@ function createStore(agent, { variant, now }) {
     return { ok: true, message: `Copied ${from.name} to ${where(project)}.`, undo: { type: 'remove', key: next.key } }
   }
 
-  return { viewAnswer, act, checkUpdates, copyIn, find, versions: () => view().versions }
+  /** An edit made outside the app: every file of this agent gets a new version. */
+  const touch = () => {
+    rev++
+  }
+
+  return { viewAnswer, act, checkUpdates, copyIn, find, touch, versions: () => view().versions }
 }
 
 export function createFixtureBackend({ variant = 'default', latency = 150, now = () => Date.now() } = {}) {
@@ -676,9 +681,11 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
     if (project !== null && action.to.scope !== undefined && !scopes.includes(action.to.scope)) {
       return fail('unsupported', `${to.name} cannot put ${item.kind} into a project as "${action.to.scope}".`)
     }
-    const result = stores.get(to.id).copyIn(item, action.to)
+    const target = stores.get(to.id)
+    const result = target.copyIn(item, action.to)
     const message = `${to.name}: ${result.message}`
-    return result.ok ? { ...result, message, undoAgent: to.id } : { ...result, message }
+    // As the router does: the undo goes to the target with its versions read right after the copy.
+    return result.ok ? { ...result, message, undoAgent: to.id, undoVersions: target.versions() } : { ...result, message }
   }
 
   function handle(name, input) {
@@ -704,6 +711,10 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
 
   return {
     requests,
+    /** Tests: an edit of that agent's files made outside the app, so a view read before it is stale. */
+    touch(agent) {
+      stores.get(agent)?.touch()
+    },
     request(name, input) {
       requests.push({ name, input: clone(input ?? {}) })
       // The check goes to the network in the real backend, so it takes a little longer here too.

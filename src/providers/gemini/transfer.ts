@@ -17,6 +17,7 @@ import {
   optionLikeRefusal,
   portableMcp,
   secretRefusal,
+  shellQuote,
   skillEntry,
   type Exported,
   type Portable,
@@ -76,8 +77,10 @@ export async function importGemini(deps: ProviderDeps, paths: GeminiPaths, item:
     const dirOf = (_kind: string, at: string | null) => (at === null ? `${paths.dir}/skills` : `${at}/.gemini/skills`)
     const copied = await moveEntry(deps.fs, { owner: 'Gemini CLI', projects: async () => setup.projects, dirOf }, skillEntry(item), project, true)
     if (!copied.ok) return copied
-    const scope = project === null ? '' : ' --scope workspace (run in the project)'
-    return done(`Copied skill "${item.name}" to ${ctx.say(copied.path)}. To remove it: gemini skills uninstall ${item.name}${scope}`)
+    // `gemini skills uninstall` takes the skill's folder name, which can differ from the name in its SKILL.md.
+    const folder = copied.path.slice(copied.path.lastIndexOf('/') + 1)
+    const remove = shellQuote(['gemini', 'skills', 'uninstall', folder, ...(project === null ? [] : ['--scope', 'workspace'])])
+    return done(`Copied skill "${item.name}" to ${ctx.say(copied.path)}. To remove it: ${remove}${project === null ? '' : ' (run in the project)'}`)
   }
 
   const secret = secretRefusal(item, { commandLine: 'gemini mcp add', teamFile: project !== null })

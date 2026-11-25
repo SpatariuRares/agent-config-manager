@@ -210,7 +210,7 @@ function selectAgent(id) {
  * Runs one action: disables every other action, shows progress on the item, then re-renders from
  * the returned view and reports the result in the notice area.
  */
-async function run(action, { key = action.key ?? null, keys = null, label = 'Working…', focusNotice = false, focusAfter = null, describe, agent = null } = {}) {
+async function run(action, { key = action.key ?? null, keys = null, label = 'Working…', focusNotice = false, focusAfter = null, describe, agent = null, undoVersions = null } = {}) {
   if (state.busy) return
   closePopover({ restoreFocus: false })
   // Controls are disabled while the action runs, which drops focus; put it back afterwards.
@@ -222,7 +222,7 @@ async function run(action, { key = action.key ?? null, keys = null, label = 'Wor
   render()
   // An undo for another agent (a copy to it) goes to that agent; then the agent shown is read again.
   const elsewhere = agent !== null && agent !== state.agent
-  const answer = elsewhere ? await transport.runActionFor(agent, action) : await transport.runAction(action)
+  const answer = elsewhere ? await transport.runActionFor(agent, action, undoVersions) : await transport.runAction(action)
   const view = elsewhere ? await transport.getView() : answer.view
   state.busy = null
   const { result } = answer
@@ -247,7 +247,7 @@ async function run(action, { key = action.key ?? null, keys = null, label = 'Wor
   }
 
   const notice = result.ok
-    ? { tone: 'ok', message: result.message, warning: result.warning, undo: result.undo, undoAgent: result.undoAgent ?? null }
+    ? { tone: 'ok', message: result.message, warning: result.warning, undo: result.undo, undoAgent: result.undoAgent ?? null, undoVersions: result.undoVersions ?? null }
     : { tone: 'error', message: result.message, detail: result.reason }
   if (reloadError && result.ok) notice.warning = [notice.warning, `The list could not be reloaded: ${reloadError}. Use Refresh.`].filter(Boolean).join(' ')
   if (result.ok) Object.assign(notice, describe?.(state.view) ?? {})
@@ -1215,7 +1215,7 @@ document.addEventListener('click', (e) => {
       const n = state.notice
       // The undo of a copy to another agent applies there: no item of this view is busy meanwhile.
       const other = n?.undoAgent && n.undoAgent !== state.agent ? n.undoAgent : null
-      return n?.undo && run(n.undo, { key: other ? null : (n.undo.key ?? null), focusNotice: true, agent: other })
+      return n?.undo && run(n.undo, { key: other ? null : (n.undo.key ?? null), focusNotice: true, agent: other, undoVersions: other ? n.undoVersions : null })
     }
     case 'make-team':
       return state.notice?.team && run(state.notice.team, { focusNotice: true })

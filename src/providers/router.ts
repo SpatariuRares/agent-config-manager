@@ -87,7 +87,7 @@ const notDetected = (info: AgentInfo, what: string): ActionResult => ({
  * 'copyToAgent': the request's agent exports the item, `toAgent` imports it through its own write path. Everything
  * shared is checked here, before either provider runs: both agents known and detected, the source declares the
  * class in `exports`, the target in `imports`, and a project target uses a scope the target declared. The answer's
- * message names the target agent, and its undo (the target's own) carries `undoAgent`.
+ * message names the target agent, and its undo (the target's own) carries `undoAgent` and `undoVersions`.
  */
 async function copied(deps: ProviderDeps, providers: readonly AgentProvider[], source: AgentProvider, request: ActionRequest): Promise<ActionResult> {
   const action = request.action as Extract<Action, { type: 'copyToAgent' }>
@@ -117,13 +117,19 @@ async function copied(deps: ProviderDeps, providers: readonly AgentProvider[], s
   const exported = await source.exportItem(deps, action.key)
   if (!exported.ok) return { ...exported, message: `${from.name}: ${exported.message}` }
   if (exported.item.kind !== kind) return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
-  // The target's own versions, read just before: its write refuses a file that changes in between.
+  // The request's versions are the source's (the panel has no view of the target), so they are not used for the
+  // target: its own versions are read here, just before the write, which refuses a file that changes in between.
+  // That a server or skill of the same name is already there is the target's own check (`exists`), made at write
+  // time against the file as it is, so it holds whatever these versions say.
   const versions = (await target.buildView(deps)).versions
   const destination = { project: place.project as string | null, ...(typeof place.scope === 'string' ? { scope: place.scope as ProjectScope } : {}) }
   const result = await target.importItem(deps, exported.item, destination, versions)
   const message = `${to.name}: ${result.message}`
   if (!result.ok) return { ...result, message }
-  return { ...result, message, ...(result.undo ? { undoAgent: to.id } : {}) }
+  if (!result.undo) return { ...result, message }
+  // The target's versions right after the copy: the undo carries exactly these, so it refuses a file changed since.
+  const undoVersions = (await target.buildView(deps)).versions
+  return { ...result, message, undoAgent: to.id, undoVersions }
 }
 
 /** Why the agent cannot run this action, or null when it declared it for the action's class. */

@@ -72,7 +72,8 @@ test('copyToAgent exports from the source, imports into the target with its own 
     ok: true,
     message: 'Agent b: Copied skill "pdf".',
     undo: { type: 'remove', key: 'skills:/home/.b/skills/pdf' },
-    undoAgent: 'b'
+    undoAgent: 'b',
+    undoVersions: { '/home/.b/file': 'v-b' }
   })
   assert.deepEqual(a.calls, ['export skills:/home/.a/skills/pdf'])
   assert.deepEqual(b.calls, ['import pdf {"project":null} {"/home/.b/file":"v-b"}'])

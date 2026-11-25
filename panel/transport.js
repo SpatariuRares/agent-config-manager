@@ -192,15 +192,15 @@ export function createTransport({ search = location.search, hash = location.hash
       }
     },
     /**
-     * Runs an action for another agent than the one shown: the undo of a copy to that agent (ActionResult.undoAgent).
-     * That agent's view is read first, for its versions; the shown agent and its versions stay as they are, and the
-     * answer's view (the other agent's) is for the caller to drop.
+     * Runs an action for another agent than the one shown: the undo of a copy to that agent (ActionResult.undoAgent),
+     * sent with exactly `versions`, that agent's versions read right after the copy (ActionResult.undoVersions), so a
+     * file changed since refuses it. Without them, `{}`: the action is refused rather than run unchecked. The shown
+     * agent and its versions stay as they are, and the answer's view (the other agent's) is for the caller to drop.
      * @returns {Promise<import('../src/adapters/view.ts').ActionAnswer>}
      */
-    async runActionFor(other, action) {
+    async runActionFor(other, action, versions) {
       try {
-        const view = await backend.request('view.get', { agent: other })
-        return await backend.request('action.run', { agent: other, action, versions: view?.ok ? view.view.versions : {} })
+        return await backend.request('action.run', { agent: other, action, versions: versions ?? {} })
       } catch (error) {
         const message = describe(error)
         return { result: { ok: false, reason: 'transport', message: `The action did not run: ${message}` }, view: { ok: false, error: message } }

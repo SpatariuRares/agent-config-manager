@@ -67,6 +67,29 @@ test('a copy to another agent shows the notice naming that agent, and Undo is se
   await expect(item(page, 'github')).toHaveCount(1)
 })
 
+test('the Undo of a copy carries the versions read right after the copy: an edit of the target since then refuses it', async ({ page }) => {
+  await open(page)
+  await tab(page, 'MCP').click()
+  await item(page, 'github').getByRole('button', { name: /More actions|Actions/ }).click()
+  await page.getByRole('menuitem', { name: 'Copy to agent…' }).click()
+  await page.getByRole('menu', { name: 'Copy github to agent' }).getByRole('menuitem', { name: /^Codex/ }).click()
+  await page.getByRole('dialog', { name: 'Copy github to Codex' }).getByRole('option', { name: /^Global/ }).click()
+  const notice = page.locator('#notice .notice')
+  await expect(notice).toContainText('Codex: Copied github to Global.')
+
+  // Codex's files change outside the app after the copy.
+  await page.evaluate(() => (globalThis as unknown as { ccmFixture: { touch(agent: string): void } }).ccmFixture.touch('codex'))
+  await notice.getByRole('button', { name: 'Undo' }).click()
+  await expect(page.locator('#notice .notice')).toContainText('changed since this list was read')
+  const runs = await requests(page)
+  const undoAt = runs.map((r) => r.name).lastIndexOf('action.run')
+  expect(runs[undoAt].input).toMatchObject({ agent: 'codex', action: { type: 'remove' } })
+  expect(Object.values(runs[undoAt].input.versions ?? {})).not.toHaveLength(0)
+  // The undo went out with no fresh read of Codex's view: the versions are the ones from the copy.
+  expect(runs[undoAt - 1]).not.toMatchObject({ name: 'view.get', input: { agent: 'codex' } })
+  await expect(page.getByRole('button', { name: /^Agent:/ })).toHaveText('Claude Code')
+})
+
 test('an agent with no importer for the class has no Copy to agent entry', async ({ page }) => {
   await open(page)
   await tab(page, 'Hooks').click()

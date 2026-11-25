@@ -95,19 +95,103 @@ export function redactUrl(url: string): string {
   return `${whole.slice(0, whole.length - parsed.pathname.length)}${path}${query ? `?${query}` : ''}`
 }
 
+/** A `${VAR}` reference: names an environment variable, holds no value. */
+const REFERENCE = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g
+const isReferenceOnly = (text: string) => /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(text)
+/** A header that carries a credential, and what follows its colon (up to a quote or the end of the line). */
+const SECRET_HEADER = /\b((?:proxy-)?authorization|x-api-key|api-key|x-auth-token|cookie)(\s*:\s*)([^'"\n]*)/gi
+/** An HTTP auth scheme and the word after it: the credential. */
+const AUTH_SCHEME = /\b(Bearer|Basic)(\s+)([^\s'"]+)/gi
+/**
+ * The pieces of a value, in order: a URL (kept whole), a `${VAR}` reference, or a word between separators
+ * (whitespace, `=`, `:`, `,`, `;`, quotes, JSON punctuation, parentheses, `<`, `>`). A `$` that starts a reference ends a word.
+ */
+const PIECE = /[a-z][\w+.-]*:\/\/[^\s'"<>`]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|(?:[^\s=:,;'"`{}[\]<>()$]|\$(?!\{))+/gi
+
+/** One piece of a value is a credential: token-shaped, or a known token prefix after a `/` (`${HOME}/ghp_...`). */
+const pieceIsSecret = (piece: string) => looksSecret(piece) || (piece.includes('/') && piece.split('/').some((part) => TOKEN_PREFIX.test(part)))
+
+type Scanned = { text: string; secret: boolean }
+
+/** A parsed JSON value with every credential redacted: a literal under a secret-named key, or one found by scanValue. */
+function scanJson(value: unknown, depth: number, key: string | null): { value: unknown; secret: boolean } {
+  if (typeof value === 'string') {
+    if (key !== null && SECRET_NAME.test(key) && value !== '' && value !== REDACTED && !isReferenceOnly(value)) return { value: REDACTED, secret: true }
+    const scanned = scanValue(value, depth + 1)
+    return { value: scanned.text, secret: scanned.secret }
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map((entry) => scanJson(entry, depth, null))
+    return { value: parts.map((part) => part.value), secret: parts.some((part) => part.secret) }
+  }
+  if (value !== null && typeof value === 'object') {
+    const parts = Object.entries(value).map(([name, entry]) => [name, scanJson(entry, depth, name)] as const)
+    return { value: Object.fromEntries(parts.map(([name, part]) => [name, part.value])), secret: parts.some(([, part]) => part.secret) }
+  }
+  return { value, secret: false }
+}
+
+/**
+ * Every word inside a value, checked and redacted: a credential header (`Authorization: x`), an auth scheme and
+ * its token (`Bearer x`, `Basic x`), then each piece (URL, word around separators and `${VAR}` references).
+ * A value that parses as a JSON object or array is checked field by field. `${VAR}` references are never secret.
+ */
+function scanValue(value: string, depth = 0): Scanned {
+  const trimmed = value.trim()
+  if (depth < 8 && /^[{[]/.test(trimmed)) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      const scanned = scanJson(parsed, depth, null)
+      return scanned.secret ? { text: JSON.stringify(scanned.value), secret: true } : { text: value, secret: false }
+    } catch {
+      // Not JSON: scanned as text.
+    }
+  }
+  let secret = false
+  const text = value
+    .replace(SECRET_HEADER, (whole, name: string, colon: string, rest: string) => {
+      const left = rest.replace(REFERENCE, '').replace(/\b(Bearer|Basic)\b/gi, '').replaceAll(REDACTED, '').trim()
+      if (left === '') return whole
+      secret = true
+      return `${name}${colon}${REDACTED}`
+    })
+    .replace(AUTH_SCHEME, (whole, scheme: string, space: string, token: string) => {
+      if (isReferenceOnly(token) || token.startsWith(REDACTED)) return whole
+      secret = true
+      return `${scheme}${space}${REDACTED}`
+    })
+    .replace(PIECE, (piece) => {
+      if (URL_LIKE.test(piece)) {
+        if (!urlHasSecret(piece)) return piece
+        secret = true
+        return redactUrl(piece)
+      }
+      if (isReferenceOnly(piece) || !pieceIsSecret(piece)) return piece
+      secret = true
+      return REDACTED
+    })
+  return { text, secret }
+}
+
+/** Whether a value holds a credential anywhere inside it (every word checked; `${VAR}` references never count). */
+export function textHasSecret(value: string): boolean {
+  return scanValue(value).secret
+}
+
 /** One word after `previous`: what may be shown, and whether it hid a credential. */
-function redactWord(previous: string | null, word: string): { text: string; secret: boolean } {
+function redactWord(previous: string | null, word: string): Scanned {
   const assignment = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/s.exec(word)
   if (assignment) {
     const [, name, value] = assignment
     if (SECRET_NAME.test(name) || looksSecret(value)) return { text: `${name}=${REDACTED}`, secret: true }
-    if (URL_LIKE.test(value)) return { text: `${name}=${redactUrl(value)}`, secret: urlHasSecret(value) }
-    return { text: word, secret: false }
+    if (URL_LIKE.test(value) && !/\s/.test(value)) return { text: `${name}=${redactUrl(value)}`, secret: urlHasSecret(value) }
+    const scanned = scanValue(value)
+    return { text: scanned.text === value ? word : `${name}=${scanned.text}`, secret: scanned.secret }
   }
   if (previous !== null && isSecretFlag(previous) && !word.startsWith('-') && !word.includes(REDACTED)) return { text: REDACTED, secret: true }
   if (looksSecret(word)) return { text: REDACTED, secret: true }
-  if (URL_LIKE.test(word)) return { text: redactUrl(word), secret: urlHasSecret(word) }
-  return { text: word, secret: false }
+  if (URL_LIKE.test(word) && !/\s/.test(word)) return { text: redactUrl(word), secret: urlHasSecret(word) }
+  return scanValue(word)
 }
 
 /** Command-line words with credentials replaced: `--api-key x`, `--token=x`, `-H x`, `KEY=x`, token-shaped words, URLs. */

@@ -92,3 +92,53 @@ test('a webhook URL in args or in a hook command is redacted, and counts as a se
   assert.equal(argsHaveSecret(['notify', DISCORD]), true)
   assert.equal(redactCommand(`curl -X POST ${SLACK}`), `curl -X POST https://hooks.slack.com/services/T000/B000/${R}`)
 })
+
+// ---------- A secret inside a longer value: every word of it is checked, not only the first.
+
+const GHP = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'
+const SK = 'sk-live-0123456789abcdef'
+
+test('a secret inside a longer value is found and redacted: after a scheme, a word, a ${VAR}, a path or in JSON', () => {
+  for (const [name, value] of [
+    ['--header', `Authorization: Bearer ${GHP}`],
+    ['GH_CONFIG', `token ${GHP}`],
+    ['T', `\${X}${GHP}`],
+    ['T', `${SK}\${X}`],
+    ['CFG', `\${HOME}/${GHP}`],
+    ['CREDS', `{"token":"${GHP}"}`],
+    ['X-Custom', `token ${GHP}`]
+  ]) {
+    const word = `${name}=${value}`
+    assert.equal(argsHaveSecret([word]), true, word)
+    const [shown] = redactArgs([word])
+    assert.doesNotMatch(shown, /ghp_|sk-live/, shown)
+    assert.match(shown, /<redacted>/, shown)
+  }
+})
+
+test('a secret inside a longer word without a name is found too, and the rest stays readable', () => {
+  assert.equal(argsHaveSecret([`token ${GHP}`]), true)
+  assert.deepEqual(redactArgs(['mcp-remote', `--header=Authorization: Bearer ${GHP}`]), ['mcp-remote', `--header=Authorization: ${R}`])
+  assert.deepEqual(redactArgs([`--opts=mode fast ${SK}`]), [`--opts=mode fast ${R}`])
+  assert.deepEqual(redactArgs([`--config={"token":"${GHP}","port":8080}`]), [`--config={"token":"${R}","port":8080}`])
+})
+
+test('Bearer or Basic followed by any token is a secret; followed by a ${VAR} reference it is not', () => {
+  assert.equal(argsHaveSecret(['--header=Authorization: Bearer hunter2']), true)
+  assert.equal(argsHaveSecret(['--header=X-Auth: Basic dXNlcjpwYXNz']), true)
+  assert.deepEqual(redactArgs(['--header=X-Auth: Basic dXNlcjpwYXNz']), [`--header=X-Auth: Basic ${R}`])
+  assert.equal(argsHaveSecret(['--header=Authorization: Bearer ${TOKEN}']), false)
+  assert.equal(argsHaveSecret(['H=Bearer ${TOKEN}']), false)
+})
+
+test('a JSON value with a secret-named key holding a literal counts; a ${VAR} reference there does not', () => {
+  assert.equal(argsHaveSecret(['CREDS={"password":"hunter2"}']), true)
+  assert.equal(argsHaveSecret(['CREDS={"password":"${PASSWORD}","user":"me"}']), false)
+})
+
+test('harmless values stay readable and allowed: paths, ports, plain words, ${VAR} paths', () => {
+  const harmless = ['/mcp', '--port=8080', 'node server.js', '${HOME}/bin', 'HOME=${HOME}/bin', 'serve', 'LOG=info', '-y', '@upstash/context7-mcp@2.2.5', 'https://api.example/mcp', '--config={"port":8080}', 'MODE=read only']
+  for (const word of harmless) assert.equal(argsHaveSecret([word]), false, word)
+  assert.deepEqual(redactArgs(harmless), harmless)
+  assert.equal(redactCommand('node server.js --port=8080 ${HOME}/bin'), 'node server.js --port=8080 ${HOME}/bin')
+})

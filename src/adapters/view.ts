@@ -181,6 +181,11 @@ export type ActionResult =
       undo?: Action
       /** The agent `undo` must be sent to, when it is not the request's agent (a 'copyToAgent' undo). */
       undoAgent?: AgentId
+      /**
+       * With `undoAgent`: that agent's versions, read right after the copy. Send exactly these as the undo's
+       * `versions`, so an undo is refused (`changed`) when a file of that agent changed after the copy.
+       */
+      undoVersions?: Record<string, string>
       warning?: string
     }
   | {
