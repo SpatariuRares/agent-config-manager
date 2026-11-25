@@ -9,14 +9,21 @@ editor. The same panel also loads as an [Orca](https://github.com/stablyai/orca)
 
 ## Run it
 
-Requires Node 23.6+ (it runs TypeScript directly) and the `claude` CLI on your PATH.
+Requires Node 23.6+ (it runs TypeScript directly) and the `claude` CLI on your PATH. It is not on
+npm yet: install the `agent-config` command from a clone.
 
 ```sh
 npm install
-npm start                      # opens http://127.0.0.1:4321/#token=… in your browser
-npm start -- --port 5000       # another port
-npm start -- --no-open         # print the link instead of opening it
+npm link                       # or: npm install -g .  (links the agent-config command to this clone)
+agent-config                   # opens http://127.0.0.1:4321/#token=… in your browser
+agent-config start --port 5000 # another port; --no-open prints the link instead
+agent-config install-commands  # adds /agent-config to Claude Code, Codex, Gemini CLI and Copilot CLI
 ```
+
+After `install-commands`, type `/agent-config` in Claude Code, Gemini CLI or Copilot CLI (in Codex:
+`$agent-config`), and the agent starts the panel and gives you the link. `npm start` still works
+from the clone. See [docs/launching.md](docs/launching.md) for every option and the exact files
+written.
 
 Keep the terminal open while you use the page; Ctrl-C stops it. The server listens on 127.0.0.1
 only and prints a new secret link on every start: the page must be opened from that link, and
