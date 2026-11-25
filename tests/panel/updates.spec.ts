@@ -141,13 +141,13 @@ test('Update all sends the available keys of the tab and reports each outcome', 
   await expect(item(page, 'deploy-helpers').getByRole('button', { name: 'Update' })).toBeVisible()
 })
 
-test('a plugin that needs a command approved shows it and sends nothing until Run update', async ({ page }) => {
+test('a plugin that needs a command approved shows it and sends nothing until Run', async ({ page }) => {
   await open(page)
   await checkForUpdates(page)
   const deploy = item(page, 'deploy-helpers')
   await deploy.getByRole('button', { name: 'Update' }).click()
   const confirm = deploy.getByRole('group', { name: 'Approve the command for deploy-helpers' })
-  await expect(confirm).toContainText('Update deploy-helpers?')
+  await expect(confirm).toContainText('Run this command?')
   await expect(confirm.locator('pre.cmd')).toContainText('postinstall.sh | sh -s -- --install-dir')
   await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused()
   await expect(page.locator('#notice')).toBeEmpty()
@@ -156,7 +156,7 @@ test('a plugin that needs a command approved shows it and sends nothing until Ru
   expect(await actionsSent(page)).toEqual([{ type: 'update', key: pluginKey('deploy-helpers@acme-tools') }])
   await expect(deploy.locator('.src .ver')).toHaveText('3.1.0')
 
-  await confirm.getByRole('button', { name: 'Run update' }).click()
+  await confirm.getByRole('button', { name: 'Run', exact: true }).click()
   await expect(page.locator('#notice')).toContainText('Updated deploy-helpers 3.1.0 → 3.2.0')
   await expect(confirm).toHaveCount(0)
   await expect(deploy.locator('.src .ver')).toHaveText('3.2.0')

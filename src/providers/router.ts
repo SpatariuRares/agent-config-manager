@@ -1,8 +1,9 @@
 // The shared part of every request: which provider answers it, whether its agent is installed, and whether
-// it declared the action. A provider is never called with an action it did not list in `info().supports`.
+// it declared the action. A provider is never called with an action it did not list in `info().supports`
+// ('copyToAgent': in `info().exports` for the source, `info().imports` for the target).
 import { isObject } from '../core/json.ts'
 import type { Http } from '../core/ports.ts'
-import type { Action, ActionAnswer, ActionRequest, ActionResult, AgentInfo, AgentRequest, Kind, UpdatesAnswer, ViewAnswer } from '../adapters/view.ts'
+import type { Action, ActionAnswer, ActionRequest, ActionResult, AgentInfo, AgentRequest, Kind, ProjectScope, UpdatesAnswer, ViewAnswer } from '../adapters/view.ts'
 import { ACTION_TYPES, BACKUP_ACTIONS, isKind, kindOfKey, type AgentProvider, type ProviderDeps } from './types.ts'
 
 export type ProviderLookup = { ok: true; provider: AgentProvider } | { ok: false; reason: 'unknown-agent'; message: string }
@@ -55,7 +56,8 @@ export async function routeAction(deps: ProviderDeps, providers: readonly AgentP
   const { provider } = found
   let result: ActionResult
   try {
-    result = await checked(deps, provider, request as ActionRequest)
+    const action = isObject(request) && isObject(request.action) ? request.action : null
+    result = action?.type === 'copyToAgent' ? await copied(deps, providers, provider, request as ActionRequest) : await checked(deps, provider, request as ActionRequest)
   } catch (error) {
     result = { ok: false, reason: 'error', message: String(error) }
   }
@@ -73,6 +75,55 @@ async function checked(deps: ProviderDeps, provider: AgentProvider, request: Act
   if (refused !== null) return refused
   const versions: Record<string, string> = isObject(request.versions) ? request.versions : {}
   return provider.runAction(deps, { agent: provider.id, action, versions })
+}
+
+const notDetected = (info: AgentInfo, what: string): ActionResult => ({
+  ok: false,
+  reason: 'not-detected',
+  message: `${info.name} is not installed on this machine, so nothing was ${what}.`
+})
+
+/**
+ * 'copyToAgent': the request's agent exports the item, `toAgent` imports it through its own write path. Everything
+ * shared is checked here, before either provider runs: both agents known and detected, the source declares the
+ * class in `exports`, the target in `imports`, and a project target uses a scope the target declared. The answer's
+ * message names the target agent, and its undo (the target's own) carries `undoAgent`.
+ */
+async function copied(deps: ProviderDeps, providers: readonly AgentProvider[], source: AgentProvider, request: ActionRequest): Promise<ActionResult> {
+  const action = request.action as Extract<Action, { type: 'copyToAgent' }>
+  const from = await source.info(deps)
+  if (!from.detected) return notDetected(from, 'copied')
+  const kind = kindOfKey(action.key)
+  if (kind === null) return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
+  const note = (info: AgentInfo) => (info.note ? ` ${info.note}` : '')
+  if (!from.kinds.includes(kind) || !(from.exports ?? []).includes(kind) || source.exportItem === undefined) {
+    return { ok: false, reason: 'unsupported', message: `${from.name} cannot copy ${kind} to another agent here.${note(from)}` }
+  }
+  const found = lookupProvider(providers, action.toAgent)
+  if (!found.ok) return { ok: false, reason: found.reason, message: found.message }
+  const target = found.provider
+  if (target.id === source.id) return { ok: false, reason: 'same-agent', message: `That is ${from.name} itself: use Copy to… to copy within one agent.` }
+  const to = await target.info(deps)
+  if (!to.detected) return notDetected(to, 'copied')
+  if (!to.kinds.includes(kind) || !(to.imports ?? []).includes(kind) || target.importItem === undefined) {
+    return { ok: false, reason: 'unsupported', message: `${to.name} cannot take ${kind} from another agent here.${note(to)}` }
+  }
+  const place: unknown = action.to
+  if (!isObject(place) || !(place.project === null || typeof place.project === 'string')) {
+    return { ok: false, reason: 'invalid', message: 'The copy names no destination.' }
+  }
+  const scoped = scopeRefusal(to, kind, place)
+  if (scoped !== null) return scoped
+  const exported = await source.exportItem(deps, action.key)
+  if (!exported.ok) return { ...exported, message: `${from.name}: ${exported.message}` }
+  if (exported.item.kind !== kind) return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
+  // The target's own versions, read just before: its write refuses a file that changes in between.
+  const versions = (await target.buildView(deps)).versions
+  const destination = { project: place.project as string | null, ...(typeof place.scope === 'string' ? { scope: place.scope as ProjectScope } : {}) }
+  const result = await target.importItem(deps, exported.item, destination, versions)
+  const message = `${to.name}: ${result.message}`
+  if (!result.ok) return { ...result, message }
+  return { ...result, message, ...(result.undo ? { undoAgent: to.id } : {}) }
 }
 
 /** Why the agent cannot run this action, or null when it declared it for the action's class. */

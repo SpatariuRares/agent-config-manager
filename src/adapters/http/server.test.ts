@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test'
 import { fakeFs } from '../../core/test-support.ts'
 import { fakeExec } from '../../providers/testing.ts'
 import { PROVIDERS } from '../../providers/registry.ts'
-import { createConfigServer } from './server.ts'
+import { createConfigServer, portInUseMessage } from './server.ts'
 
 const TOKEN = 'test-token-0123456789'
 let panelDir: string
@@ -181,4 +181,8 @@ test('updates.check answers for the agent it names', async () => {
   const body = await (await api('updates.check', { body: JSON.stringify({ agent: 'nope' }) })).json()
   assert.deepEqual(body.errors, ['Unknown agent "nope".'])
   assert.deepEqual(body.statuses, {})
+})
+
+test('L-C: a port in use suggests the agent-config command with the next port', () => {
+  assert.equal(portInUseMessage(4321), 'Port 4321 is in use. Try: agent-config start --port 4322')
 })

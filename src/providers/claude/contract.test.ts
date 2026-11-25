@@ -31,6 +31,8 @@ test('Claude Code info: id, name, config home, all five classes and what works t
     kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'],
     supports: CLAUDE_SUPPORTS,
     projectScopes: CLAUDE_PROJECT_SCOPES,
+    exports: ['skills', 'mcp'],
+    imports: ['skills', 'mcp'],
     configHome: '~/.claude'
   })
 })

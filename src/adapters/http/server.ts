@@ -11,6 +11,9 @@ import { actionQueue, buildView, checkUpdates, runAction, type BackendDeps } fro
 import type { Http } from '../../core/ports.ts'
 import type { ActionRequest, AgentRequest } from '../view.ts'
 
+/** What to say when the port is taken: the `agent-config` command (package bin) with the next port. */
+export const portInUseMessage = (port: number) => `Port ${port} is in use. Try: agent-config start --port ${port + 1}`
+
 export interface ConfigServerOptions {
   deps: BackendDeps & { http: Http }
   /** The folder holding the panel's index.html and modules. */

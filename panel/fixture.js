@@ -212,6 +212,9 @@ const AGENTS = [
     },
     // As the real provider: skills and agents always land in the project's .claude/ folder.
     projectScopes: { plugins: ['local', 'project'], skills: ['project'], agents: ['project'], mcp: ['local', 'project'], hooks: ['local', 'project'] },
+    // Copy to agent: what it hands to another agent, and takes from one.
+    exports: ['skills', 'mcp'],
+    imports: ['skills', 'mcp'],
     configHome: '~/.claude',
   },
   {
@@ -225,6 +228,8 @@ const AGENTS = [
     },
     // As the real provider: skills go to the project's own folder; MCP servers never go into a project.
     projectScopes: { skills: ['project'] },
+    exports: ['skills', 'mcp'],
+    imports: ['skills', 'mcp'],
     configHome: '~/.codex',
     note: 'Plugins, agents and hooks are read-only: Codex has no command to turn a plugin on or off, and editing hooks.json changes the hashes Codex trusts hooks by. ~/.codex/config.toml is never rewritten here: MCP servers are removed with `codex mcp remove`.',
   },
@@ -239,6 +244,8 @@ const AGENTS = [
     },
     // As the real provider: a project's .gemini/settings.json is shared; there is no only-me file.
     projectScopes: { mcp: ['project'] },
+    exports: ['mcp'],
+    imports: ['mcp'],
     configHome: '~/.gemini',
     note: 'Extensions show as plugins; turn them on and off here, install and update them with gemini extensions.',
   },
@@ -250,6 +257,8 @@ const AGENTS = [
     // Not installed, so it backs nothing up; its moves go to a project's shared folders only, as the real provider.
     supports: { skills: ['move', 'remove'], agents: ['move', 'remove'], mcp: ['move', 'remove'] },
     projectScopes: { skills: ['project'], agents: ['project'], mcp: ['project'] },
+    exports: ['skills', 'mcp'],
+    imports: ['skills', 'mcp'],
     configHome: '~/.copilot',
   },
 ]
@@ -611,7 +620,30 @@ function createStore(agent, { variant, now }) {
     return { result, view: viewAnswer() }
   }
 
-  return { viewAnswer, act, checkUpdates }
+  /** Copy to agent, target side: adds a copy of another agent's item; the undo removes it here. */
+  function copyIn(from, to) {
+    const project = to?.project ?? null
+    const scope = project === null ? 'user' : (to.scope ?? agent.projectScopes[from.kind]?.[0] ?? 'project')
+    const clash = items.find((i) => i.kind === from.kind && i.name === from.name && i.project === project && i.scope === scope)
+    if (clash) return fail('exists', `${where(project)} already has ${from.kind === 'mcp' ? 'an MCP server' : 'a skill'} named ${from.name}. Remove or rename it first.`)
+    const { updateSource, notMovableReason, ...rest } = clone(from)
+    const next = {
+      ...rest,
+      agent: agent.id,
+      project,
+      scope,
+      movable: true,
+      removable: true,
+      key: keyFor(from.kind, from.name, project, scope, agent.id),
+      source: sourceFor(from.kind, from.name, project, scope, agent.id),
+    }
+    backupBefore(next.source)
+    items.push(next)
+    rev++
+    return { ok: true, message: `Copied ${from.name} to ${where(project)}.`, undo: { type: 'remove', key: next.key } }
+  }
+
+  return { viewAnswer, act, checkUpdates, copyIn, find, versions: () => view().versions }
 }
 
 export function createFixtureBackend({ variant = 'default', latency = 150, now = () => Date.now() } = {}) {
@@ -621,6 +653,34 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
   const storeFor = (input) => stores.get(input?.agent ?? defaultAgent)
   const unknown = (input) => `Unknown agent "${input?.agent}".`
 
+  /** Copy to agent: checked here like the router does (both detected, exports, imports, scope), then the target copies. */
+  function copyToAgent(input) {
+    const fail = (reason, message) => ({ ok: false, reason, message })
+    const { action } = input
+    const from = AGENTS.find((a) => a.id === input.agent)
+    const to = AGENTS.find((a) => a.id === action.toAgent)
+    const source = stores.get(from.id)
+    const stale = Object.entries(input.versions ?? {}).some(([f, v]) => source.versions()[f] !== undefined && source.versions()[f] !== v)
+    if (stale) return fail('stale', 'Your settings changed since this list was read. The list is refreshed; try again.')
+    const item = source.find(action.key)
+    if (!item) return fail('missing', 'That item is gone; it may have changed on disk. The list is refreshed.')
+    if (!from.detected) return fail('not-detected', `${from.name} is not installed on this machine, so nothing was copied.`)
+    if (!(from.exports ?? []).includes(item.kind)) return fail('unsupported', `${from.name} cannot copy ${item.kind} to another agent here.`)
+    if (!to) return fail('unknown-agent', `Unknown agent "${action.toAgent}".`)
+    if (to.id === from.id) return fail('same-agent', `That is ${from.name} itself: use Copy to… to copy within one agent.`)
+    if (!to.detected) return fail('not-detected', `${to.name} is not installed on this machine, so nothing was copied.`)
+    if (!(to.imports ?? []).includes(item.kind)) return fail('unsupported', `${to.name} cannot take ${item.kind} from another agent here.`)
+    const project = action.to?.project ?? null
+    const scopes = to.projectScopes[item.kind] ?? []
+    if (project !== null && !scopes.length) return fail('unsupported', `${to.name} cannot put ${item.kind} into a project here.`)
+    if (project !== null && action.to.scope !== undefined && !scopes.includes(action.to.scope)) {
+      return fail('unsupported', `${to.name} cannot put ${item.kind} into a project as "${action.to.scope}".`)
+    }
+    const result = stores.get(to.id).copyIn(item, action.to)
+    const message = `${to.name}: ${result.message}`
+    return result.ok ? { ...result, message, undoAgent: to.id } : { ...result, message }
+  }
+
   function handle(name, input) {
     const store = storeFor(input)
     if (name === 'view.get') {
@@ -629,6 +689,7 @@ export function createFixtureBackend({ variant = 'default', latency = 150, now =
     }
     if (name === 'action.run') {
       if (!store) return { result: { ok: false, reason: 'unknown_agent', message: unknown(input) }, view: { ok: false, error: unknown(input) } }
+      if (input.action?.type === 'copyToAgent') return { result: copyToAgent(input), view: store.viewAnswer() }
       return store.act(input)
     }
     if (name === 'updates.check') {

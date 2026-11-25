@@ -198,7 +198,7 @@ test('the contract check: projectScopes lists only classes that move, with known
   })
   assert.deepEqual(projectScopeProblems(info({ skills: ['move'], mcp: ['move'] }, { skills: ['local', 'project'], mcp: [] })), [])
   assert.deepEqual(projectScopeProblems(info({ skills: ['remove'] }, { skills: ['project'] })), [
-    'projectScopes lists skills, whose supports do not include move'
+    'projectScopes lists skills, whose supports do not include move and which it does not import'
   ])
   assert.deepEqual(projectScopeProblems(info({ skills: ['move'] }, { skills: ['project', 'project', 'user' as 'project'] })), [
     'projectScopes.skills lists "project" twice',

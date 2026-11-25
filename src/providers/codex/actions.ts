@@ -62,7 +62,7 @@ async function fresh(deps: ProviderDeps, file: string, versions: Record<string, 
   return versionOf(text) === (versions[file] ?? '') ? { text } : null
 }
 
-function places(deps: ProviderDeps, read: CodexRead): EntryPlaces {
+export function places(deps: ProviderDeps, read: CodexRead): EntryPlaces {
   const paths = codexPaths(deps.home)
   return { dirOf: (kind, project) => destinationDir(paths, kind, project), projects: async () => read.view.projects, owner: 'Codex' }
 }
@@ -136,7 +136,7 @@ async function removeServer(deps: ProviderDeps, ref: Ref & { kind: 'mcp' }, vers
 }
 
 /** Why `codex mcp add NAME -- COMMAND ARGS` cannot recreate this server exactly, or null when it can. */
-function addableServer(name: string, server: Json): string | null {
+export function addableServer(name: string, server: Json): string | null {
   const why = copyableServer(server)
   if (why !== null) return `\`codex mcp add\` cannot recreate it: ${why}`
   for (const [value, what] of [
@@ -150,7 +150,7 @@ function addableServer(name: string, server: Json): string | null {
 }
 
 /** `codex mcp add` for one server; refuses a name already in config.toml, and checks the CLI really added it. */
-async function addServer(deps: ProviderDeps, name: string, server: Json, versions: Record<string, string>): Promise<{ ok: true; saved: string } | ActionResult> {
+export async function addServer(deps: ProviderDeps, name: string, server: Json, versions: Record<string, string>): Promise<{ ok: true; saved: string } | ActionResult> {
   if (await serverPresent(deps, name)) return refuse('exists', `~/.codex/config.toml already has a server named "${name}".`)
   const args = Array.isArray(server.args) ? server.args.map(String) : []
   // Everything after `--` is the server's command line; codex never reads it as options.

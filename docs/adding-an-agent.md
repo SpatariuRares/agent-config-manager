@@ -34,6 +34,8 @@ export interface AgentProvider {
   buildView(deps: ProviderDeps): Promise<ProviderView>
   runAction(deps: ProviderDeps, request: ActionRequest): Promise<ActionResult>
   checkUpdates?(deps: ProviderDeps & { http: Http }): Promise<UpdatesAnswer>
+  exportItem?(deps: ProviderDeps, key: string): Promise<Exported>
+  importItem?(deps: ProviderDeps, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult>
 }
 ```
 
@@ -43,7 +45,8 @@ export interface AgentProvider {
 
 - `kinds`: the classes the agent has (the panel shows only these tabs).
 - `supports`: per class, the action types `runAction` really implements. The router refuses anything not listed before your code runs, and the panel hides it.
-- `projectScopes`: per class, which project scopes a move or copy may target (`local` = only me, `project` = team), first one is the default. Leave a class out when items cannot go into a project.
+- `projectScopes`: per class, which project scopes a move or copy may target (`local` = only me, `project` = team), first one is the default. Leave a class out when items cannot go into a project. A class may be listed when `supports` has `move` for it, or when the agent `imports` it.
+- `exports` and `imports`: the classes (`skills`, `mcp`) whose items can be copied to another agent, and taken from one, with the `copyToAgent` action. Leave them out (or empty) when the agent cannot; then say why in `note`.
 - `note`: one sentence on what is read-only and why. Users read it.
 
 **`buildView()`** returns items, the projects the agent knows, the version of every file it read (`versions`), backups and `problems`. Build keys with `itemKey(kind, ...)`: the router reads the class from the key. Never put secrets in an item (env values, headers, tokens in args or URLs): redact them with the toolkit's `redactArgs`, `redactUrl` and `redactCommand`, and never build a key from a secret.
@@ -57,7 +60,13 @@ export interface AgentProvider {
 | Move, copy or trash a skill folder or agent file | `moveEntry`, `trashEntry`, `restoreTrash` |
 | Read `SKILL.md` and agent `.md` files | `readSkills`, `readAgents(fs, dir, '.agent.md')` |
 | Refuse user values that look like CLI options | `optionLikeRefusal` |
+| `copyToAgent`: build a Portable, refuse secrets, copy a skill | `portableMcp`, `exportSkill`, `secretRefusal`, `mcpJson`, `skillEntry` |
 | Run the agent's CLI | `deps.exec.run(binary, argv, cwd)`: argv only, never a shell |
+
+**`exportItem()` and `importItem()`** implement `copyToAgent` (copy an item to another agent), when `exports` and `imports` list a class. The router checks everything shared before either runs: both agents are detected, the source exports the class, the target imports it, and a project target uses one of the target's `projectScopes`. The answer's view is the source agent's, the message is prefixed with the target agent's name, and an `undo` from `importItem` is sent back with `undoAgent` set to the target, so the panel sends it there.
+
+- `exportItem(deps, key)` reads the item and returns a `Portable` (`src/providers/types.ts`): an MCP server as `name`, `transport` (`stdio`, `http`, `sse`), `command`/`args` or `url`, `env` and `headers`; a skill as its `name` and folder. Map your config onto that shape with the toolkit's `portableMcp(name, fields, extra)`, passing in `extra` every setting the shape cannot carry: the copy is then refused with their names, never made without them. Use `exportSkill` for a skill folder. Exports only read, so read-only places can be exported.
+- `importItem(deps, item, to, versions)` writes through your own write path and rules, as a move does: version check against `versions` (your view, read by the router just before), backup first, your agent's CLI when it has one, no writes to places other agents read, and the scopes you declared. Apply `secretRefusal(item, { commandLine, teamFile })` first: a CLI that takes the server on its command line must not get secret-looking args, url, env or header values, and a project file shared with the team gets only `${VAR}` references. Refuse with a clear message whatever your agent cannot represent (for example `codex mcp add` cannot carry env). Return an `undo` (usually a `remove` of the new item) when your agent supports removing it. Copy skill folders with `moveEntry(fs, places, skillEntry(item), project, true)`: it never overwrites and keeps a link as a link.
 
 Rules every provider follows:
 

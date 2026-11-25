@@ -22,9 +22,19 @@ export interface AgentInfo {
   /**
    * Per class, the scopes a move or copy into a project may target, in preference order: the first is the
    * default (a drag drop uses it). A missing class or an empty list means items of that class cannot go into
-   * a project. Only classes whose `supports` include 'move' may be listed.
+   * a project. Only classes whose `supports` include 'move', or which the agent `imports`, may be listed.
    */
   projectScopes: Partial<Record<Kind, ProjectScope[]>>
+  /**
+   * The classes whose items this agent can hand to another agent with 'copyToAgent' (it is the source).
+   * Missing or empty: none.
+   */
+  exports?: Kind[]
+  /**
+   * The classes this agent can take from another agent with 'copyToAgent' (it is the target). A copy into a
+   * project uses the class's `projectScopes`, like a move. Missing or empty: none.
+   */
+  imports?: Kind[]
   /** Where the agent keeps its setup, shown to the user (e.g. "~/.codex/config.toml"). */
   configHome: string
   /** Why something is read-only or missing, shown once per agent. */
@@ -145,7 +155,11 @@ export type Action =
   | { type: 'setEnabled'; key: string; enabled: boolean }
   | { type: 'clearOverride'; key: string }
   | { type: 'uninstall'; key: string }
-  | { type: 'restore'; name: string }
+  /**
+   * Puts a backup back. `acceptCommand` is the sha256 of the command the user approved, when restoring it runs
+   * one (Gemini CLI: reinstalling an uninstalled extension); without it, such a restore only asks for approval.
+   */
+  | { type: 'restore'; name: string; acceptCommand?: string }
   | { type: 'snapshot' }
   /** Updates one item from its UpdateSource. `acceptCommand` is the sha256 the user confirmed (plugins). */
   | { type: 'update'; key: string; acceptCommand?: string }
@@ -153,14 +167,27 @@ export type Action =
   | { type: 'updateAll'; kind: Kind; keys: string[] }
   /** Refreshes plugin marketplaces (`claude plugin marketplace update`). */
   | { type: 'refreshMarketplaces' }
+  /**
+   * Copies one item of the request's agent (the source) to another agent, through that agent's own write path.
+   * The source must list the item's class in `exports`, `toAgent` in `imports`, and both must be detected.
+   * The answer's view is the source agent's; an undo, if any, applies to `toAgent` (see `undoAgent`).
+   */
+  | { type: 'copyToAgent'; key: string; toAgent: AgentId; to: Target }
 
 export type ActionResult =
-  | { ok: true; message: string; undo?: Action; warning?: string }
+  | {
+      ok: true
+      message: string
+      undo?: Action
+      /** The agent `undo` must be sent to, when it is not the request's agent (a 'copyToAgent' undo). */
+      undoAgent?: AgentId
+      warning?: string
+    }
   | {
       ok: false
       reason: string
       message: string
-      /** Set when the update needs the user to approve a command first: show `command`, then send `action`. */
+      /** Set when the action needs the user to approve a command first: show `command`, then send `action`. */
       confirm?: { command: string; action: Action }
     }
 

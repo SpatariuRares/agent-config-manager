@@ -4,6 +4,7 @@ import { KINDS, type AgentProvider, type ProviderDeps } from '../types.ts'
 import { CLAUDE, claudeAction, claudeView } from './actions.ts'
 import { claudeCliOver } from './cli.ts'
 import { claudePaths, type ClaudeDeps, type ClaudePaths, type PluginCli } from './ports.ts'
+import { exportClaude, importClaude } from './transfer.ts'
 import { checkClaudeUpdates } from './updates.ts'
 
 /** What works today, per class. Backups (restore, snapshot) cover every class's writes. */
@@ -27,6 +28,10 @@ export const CLAUDE_PROJECT_SCOPES: Record<Kind, ProjectScope[]> = {
   mcp: ['local', 'project'],
   hooks: ['local', 'project']
 }
+
+/** 'copyToAgent': what Claude Code hands to another agent, and takes from one (./transfer.ts). */
+export const CLAUDE_EXPORTS: Kind[] = ['skills', 'mcp']
+export const CLAUDE_IMPORTS: Kind[] = ['skills', 'mcp']
 
 export interface ClaudeOverrides {
   /** Defaults to ~/.claude and ~/.claude.json under `deps.home`. */
@@ -59,11 +64,15 @@ export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
         kinds: [...KINDS],
         supports: Object.fromEntries(Object.entries(CLAUDE_SUPPORTS).map(([kind, actions]) => [kind, [...actions]])),
         projectScopes: Object.fromEntries(Object.entries(CLAUDE_PROJECT_SCOPES).map(([kind, scopes]) => [kind, [...scopes]])),
+        exports: [...CLAUDE_EXPORTS],
+        imports: [...CLAUDE_IMPORTS],
         configHome: '~/.claude'
       }
     },
     buildView: (deps) => claudeView(claude(deps)),
     runAction: (deps, request) => claudeAction(claude(deps), request),
-    checkUpdates: (deps) => checkClaudeUpdates({ ...claude(deps), http: deps.http })
+    checkUpdates: (deps) => checkClaudeUpdates({ ...claude(deps), http: deps.http }),
+    exportItem: (deps, key) => exportClaude(claude(deps), key),
+    importItem: (deps, item, to, versions) => importClaude(claude(deps), item, to, versions)
   }
 }

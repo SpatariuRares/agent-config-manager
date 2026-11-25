@@ -159,7 +159,7 @@ test('Codex info: id, name, config home, all five classes, what works, and a not
   const info = await provider.info(machine().deps)
   assert.deepEqual(
     { ...info, note: undefined },
-    { id: 'codex', name: 'Codex', detected: true, kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'], supports: CODEX_SUPPORTS, projectScopes: CODEX_PROJECT_SCOPES, configHome: '~/.codex', note: undefined }
+    { id: 'codex', name: 'Codex', detected: true, kinds: ['plugins', 'skills', 'agents', 'mcp', 'hooks'], supports: CODEX_SUPPORTS, projectScopes: CODEX_PROJECT_SCOPES, exports: ['skills', 'mcp'], imports: ['skills', 'mcp'], configHome: '~/.codex', note: undefined }
   )
   assert.match(info.note ?? '', /Plugins and hooks are read-only/)
   assert.equal(info.supports.plugins, undefined)

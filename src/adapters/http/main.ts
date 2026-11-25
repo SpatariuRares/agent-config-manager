@@ -7,13 +7,13 @@ import { homedir } from 'node:os'
 import { nodeCommandRunner } from '../claude-cli.ts'
 import { nodeFileSystem } from '../node-fs.ts'
 import { fetchHttp } from '../updates.ts'
-import { createConfigServer } from './server.ts'
+import { createConfigServer, portInUseMessage } from './server.ts'
 
 const args = process.argv.slice(2)
 const portArg = args.indexOf('--port')
 const port = portArg === -1 ? 4321 : Number(args[portArg + 1])
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
-  console.error('Usage: npm start -- [--port <number>] [--no-open]')
+  console.error('Usage: agent-config start [--port <number>] [--no-open]')
   process.exit(2)
 }
 
@@ -25,7 +25,7 @@ const server = createConfigServer({
 })
 
 server.on('error', (error: NodeJS.ErrnoException) => {
-  console.error(error.code === 'EADDRINUSE' ? `Port ${port} is in use. Try: npm start -- --port ${port + 1}` : String(error))
+  console.error(error.code === 'EADDRINUSE' ? portInUseMessage(port) : String(error))
   process.exit(1)
 })
 

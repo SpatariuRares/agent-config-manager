@@ -210,7 +210,7 @@ function selectAgent(id) {
  * Runs one action: disables every other action, shows progress on the item, then re-renders from
  * the returned view and reports the result in the notice area.
  */
-async function run(action, { key = action.key ?? null, keys = null, label = 'Working…', focusNotice = false, focusAfter = null, describe } = {}) {
+async function run(action, { key = action.key ?? null, keys = null, label = 'Working…', focusNotice = false, focusAfter = null, describe, agent = null } = {}) {
   if (state.busy) return
   closePopover({ restoreFocus: false })
   // Controls are disabled while the action runs, which drops focus; put it back afterwards.
@@ -220,9 +220,12 @@ async function run(action, { key = action.key ?? null, keys = null, label = 'Wor
   state.confirm = null
   state.updateConfirm = null
   render()
-  const answer = await transport.runAction(action)
+  // An undo for another agent (a copy to it) goes to that agent; then the agent shown is read again.
+  const elsewhere = agent !== null && agent !== state.agent
+  const answer = elsewhere ? await transport.runActionFor(agent, action) : await transport.runAction(action)
+  const view = elsewhere ? await transport.getView() : answer.view
   state.busy = null
-  const { result, view } = answer
+  const { result } = answer
   let reloadError = null
   if (view?.ok) {
     state.view = view.view
@@ -244,7 +247,7 @@ async function run(action, { key = action.key ?? null, keys = null, label = 'Wor
   }
 
   const notice = result.ok
-    ? { tone: 'ok', message: result.message, warning: result.warning, undo: result.undo }
+    ? { tone: 'ok', message: result.message, warning: result.warning, undo: result.undo, undoAgent: result.undoAgent ?? null }
     : { tone: 'error', message: result.message, detail: result.reason }
   if (reloadError && result.ok) notice.warning = [notice.warning, `The list could not be reloaded: ${reloadError}. Use Refresh.`].filter(Boolean).join(' ')
   if (result.ok) Object.assign(notice, describe?.(state.view) ?? {})
@@ -909,20 +912,23 @@ function itemExtra(item, busy) {
   return extra
 }
 
-/** S4: the command a plugin update would run. Only an explicit "Run update" sends the approval. */
+/**
+ * A command the backend asks the user to approve first (a plugin update, reinstalling a Gemini CLI extension).
+ * Only an explicit "Run" sends the approval.
+ */
 function updateConfirmBox(name, busy) {
   const c = state.updateConfirm
   return h(
     'div',
     { class: 'confirm confirm-update', role: 'group', 'aria-label': `Approve the command for ${name}` },
-    h('p', null, h('strong', null, `Update ${name}?`), ' ', c.message),
+    h('p', null, h('strong', null, 'Run this command?'), ' ', c.message),
     h('p', { class: 'cmd-label', id: 'cmd-label' }, 'Command it will run'),
     h('pre', { class: 'cmd', tabindex: '0', 'aria-labelledby': 'cmd-label' }, c.command),
     h(
       'div',
       { class: 'confirm-actions' },
       h('button', { type: 'button', class: 'btn btn-secondary btn-sm', 'data-act': 'cancel-update', 'data-fid': 'cancel-update', disabled: busy }, 'Cancel'),
-      h('button', { type: 'button', class: 'btn btn-primary btn-sm', 'data-act': 'run-update', 'data-fid': 'run-update', disabled: busy }, 'Run update'),
+      h('button', { type: 'button', class: 'btn btn-primary btn-sm', 'data-act': 'run-update', 'data-fid': 'run-update', disabled: busy }, 'Run'),
     ),
   )
 }
@@ -1041,6 +1047,42 @@ function openPickerFor(item, anchor, copy) {
   })
 }
 
+/** True when the agent shown can hand items of this class to another agent (AgentInfo.exports). */
+const exportsKind = (kind) => !!currentAgent()?.exports?.includes(kind)
+
+/** The other installed agents that take items of this class from another agent (AgentInfo.imports). */
+const importersOf = (kind) =>
+  (state.agents ?? []).filter((a) => a.id !== state.agent && a.detected && a.kinds?.includes(kind) && a.imports?.includes(kind))
+
+/** Copy to agent, step 1: which agent. A menu, so arrows, Enter and Escape work as in every other menu. */
+function openAgentPickerFor(item, anchor, agents) {
+  const label = itemLabel(item)
+  openMenu(anchor, {
+    label: `Copy ${label} to agent`,
+    entries: agents.map((agent) => ({ label: agent.name, detail: agent.configHome, icon: 'copy', onSelect: () => openAgentPlacePicker(item, anchor, agent) })),
+  })
+}
+
+/** Copy to agent, step 2: Global or a project, with the scopes the target agent declared for the class. */
+function openAgentPlacePicker(item, anchor, agent) {
+  const scopes = (agent.projectScopes?.[item.kind] ?? []).filter((scope) => scope === 'local' || scope === 'project')
+  openPicker(anchor, {
+    title: `Copy ${itemLabel(item)} to ${agent.name}`,
+    verb: 'Copy',
+    destinations: [
+      { project: null, label: 'Global', detail: 'All projects' },
+      ...(scopes.length ? allProjects(state.view).map((p) => ({ project: p, label: projectName(p), detail: tildify(p) })) : []),
+    ],
+    scopes,
+    isOwnPlace: () => false,
+    onPick: (project, scope) =>
+      run(
+        { type: 'copyToAgent', key: item.key, toAgent: agent.id, to: project === null ? { project: null } : { project, scope: scope ?? scopes[0] } },
+        { label: 'Copying…', focusNotice: true },
+      ),
+  })
+}
+
 /** The overflow menu of an item: only the actions its agent supports for its class. */
 function menuEntries(item, anchor) {
   const global = item.project === null
@@ -1050,6 +1092,10 @@ function menuEntries(item, anchor) {
       { label: 'Move to…', icon: 'move', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, false) },
       { label: 'Copy to…', icon: 'copy', disabled: !item.movable, hint: item.movable ? null : item.notMovableReason, onSelect: () => openPickerFor(item, anchor, true) },
     )
+  }
+  const others = importersOf(item.kind)
+  if (exportsKind(item.kind) && others.length) {
+    entries.push({ label: 'Copy to agent…', icon: 'copy', onSelect: () => openAgentPickerFor(item, anchor, others) })
   }
   const source = item.updateSource
   if (source && supports(item.kind, 'update')) {
@@ -1165,8 +1211,12 @@ document.addEventListener('click', (e) => {
       return item && run({ type: 'uninstall', key }, { focusNotice: true })
     case 'restore':
       return run({ type: 'restore', name: target.dataset.name }, { key: null, focusNotice: true })
-    case 'undo':
-      return state.notice?.undo && run(state.notice.undo, { key: state.notice.undo.key ?? null, focusNotice: true })
+    case 'undo': {
+      const n = state.notice
+      // The undo of a copy to another agent applies there: no item of this view is busy meanwhile.
+      const other = n?.undoAgent && n.undoAgent !== state.agent ? n.undoAgent : null
+      return n?.undo && run(n.undo, { key: other ? null : (n.undo.key ?? null), focusNotice: true, agent: other })
+    }
     case 'make-team':
       return state.notice?.team && run(state.notice.team, { focusNotice: true })
     case 'dismiss':

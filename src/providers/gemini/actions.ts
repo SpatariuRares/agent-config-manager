@@ -1,6 +1,7 @@
 // Gemini CLI's writes. Every change goes through the `gemini` CLI by argv, after a version check of each file the
 // CLI will touch and a backup of it; then the file is read again to prove the change happened, since several
 // gemini subcommands print an error and still exit 0. The only direct writes are restore and snapshot (backups).
+import { createHash } from 'node:crypto'
 import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
 import {
   backUp,
@@ -8,11 +9,13 @@ import {
   isObject,
   isTrashName,
   itemKey,
+  listBackups,
   optionLikeRefusal,
   redactCommand,
   redactUrl,
   restoreFile,
   tilde,
+  urlHasSecret,
   versionOf,
   type Clock,
   type Json,
@@ -24,8 +27,8 @@ import { extensionEnabled, readSetup, rulesFor, stripComments, transportOf, move
 type Done = ActionResult & { ok: true }
 type Refused = ActionResult & { ok: false }
 
-const done = (message: string, undo?: Action, warning?: string): Done => ({ ok: true, message, ...(undo ? { undo } : {}), ...(warning ? { warning } : {}) })
-const refuse = (reason: string, message: string): Refused => ({ ok: false, reason, message })
+export const done = (message: string, undo?: Action, warning?: string): Done => ({ ok: true, message, ...(undo ? { undo } : {}), ...(warning ? { warning } : {}) })
+export const refuse = (reason: string, message: string): Refused => ({ ok: false, reason, message })
 const CHANGED = refuse('changed', 'A Gemini CLI settings file changed since it was read. Refresh and try again.')
 const GONE = refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
 
@@ -50,7 +53,7 @@ async function objectAt(deps: ProviderDeps, file: string, comments: boolean): Pr
   }
 }
 
-interface Context {
+export interface Context {
   deps: ProviderDeps
   paths: GeminiPaths
   clock: Clock
@@ -59,7 +62,7 @@ interface Context {
 }
 
 /** Refuses when any file changed since the view read it; otherwise backs up each one that exists. */
-async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups: Map<string, string> } | Refused> {
+export async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups: Map<string, string> } | Refused> {
   const texts = new Map<string, string | null>()
   for (const file of files) {
     const text = await ctx.deps.fs.readText(file)
@@ -74,7 +77,7 @@ async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups
 }
 
 /** Runs `gemini <argv>` (never a shell) in `cwd`; a failure becomes a refusal naming the command and its subject. */
-async function gemini(
+export async function gemini(
   ctx: Context,
   argv: string[],
   subject: string,
@@ -89,7 +92,7 @@ async function gemini(
 /** The question Gemini CLI asks on stdin before it accepts new permissions (requestConsentNonInteractive). */
 const CONSENT_PROMPT = /Do you want to (continue|trust this folder)|\[Y\/n\]|\[y\/N\]/
 
-const unchanged = (argv: string[], subject: string, file: string, output: string, say: (path: string) => string) =>
+export const unchanged = (argv: string[], subject: string, file: string, output: string, say: (path: string) => string) =>
   refuse('cli', `${named(argv, subject)} did not change ${say(file)}: ${tail(output) || 'no output'}`)
 
 const restoreOf = (backup: string | undefined): Action | undefined => (backup ? { type: 'restore', name: backup.slice(backup.lastIndexOf('/') + 1) } : undefined)
@@ -97,8 +100,17 @@ const restoreOf = (backup: string | undefined): Action | undefined => (backup ? 
 /** Every file this app may change for Gemini CLI: the ones the CLI writes for the actions it offers. */
 const writable = (paths: GeminiPaths, setup: Setup) => [paths.settings, ...setup.projects.map(projectSettings), paths.enablement, paths.mcpEnablement]
 
+/** What every write here works with: the deps, the paths, the view's versions, and `say` for paths in messages. */
+export const contextOf = (deps: ProviderDeps, paths: GeminiPaths, versions: Record<string, string>): Context => ({
+  deps,
+  paths,
+  clock: deps.clock ?? (() => new Date()),
+  versions,
+  say: (path) => tilde(paths.home, path)
+})
+
 export async function geminiAction(deps: ProviderDeps, paths: GeminiPaths, request: ActionRequest): Promise<ActionResult> {
-  const ctx: Context = { deps, paths, clock: deps.clock ?? (() => new Date()), versions: request.versions, say: (path) => tilde(paths.home, path) }
+  const ctx = contextOf(deps, paths, request.versions)
   const { action } = request
   const setup = await readSetup(deps.fs, paths)
 
@@ -113,6 +125,7 @@ export async function geminiAction(deps: ProviderDeps, paths: GeminiPaths, reque
   if (action.type === 'restore') {
     const target = isTrashName(action.name) ? null : backupTarget(paths.backups, action.name)
     if (target === null) return refuse('unknown-backup', `${action.name} is not a known backup.`)
+    if (isInstallRecord(paths, target)) return reinstallExtension(ctx, action.name, target, action.acceptCommand)
     const allowed = writable(paths, setup)
     const restored = await restoreFile(deps.fs, paths.backups, { name: action.name, version: request.versions[target] ?? '' }, ctx.clock, async (file) =>
       allowed.includes(file) ? null : refuse('refused', `${ctx.say(file)} is not a file this app changes for Gemini CLI.`)
@@ -174,13 +187,88 @@ async function toggleExtension(ctx: Context, setup: Setup, key: string, extensio
 async function uninstallExtension(ctx: Context, extension: Extension) {
   const guarded = await guard(ctx, [ctx.paths.enablement])
   if (!guarded.ok) return guarded
+  // The install record says where the extension came from. Backed up before the uninstall deletes it, it is what
+  // the undo reinstalls from (reinstallExtension), when `gemini extensions install` can use it.
+  const recordFile = `${extension.dir}/${INSTALL_RECORD}`
+  const record = await ctx.deps.fs.readText(recordFile)
+  const reinstallable = record !== null && reinstallArgv(record) !== null
+  const recordBackup = reinstallable ? await backUp(ctx.deps.fs, ctx.paths.backups, recordFile, record, ctx.clock) : null
   const argv = ['extensions', 'uninstall', extension.name]
   const ran = await gemini(ctx, argv, extension.name, null)
   if (!ran.ok) return ran
   if ((await ctx.deps.fs.realPath(extension.dir)) !== null) return unchanged(argv, extension.name, extension.dir, ran.output, ctx.say)
   const source = extension.install.source
   const again = source ? ` To install it again: gemini extensions install ${source.startsWith('/') ? source : redactUrl(source)}` : ''
-  return done(`Uninstalled ${extension.name}.${again}`)
+  return done(`Uninstalled ${extension.name}.${again}`, restoreOf(recordBackup ?? undefined))
+}
+
+/** The file in an extension folder that records its source (ExtensionManager, `gemini extensions install`). */
+const INSTALL_RECORD = '.gemini-extension-install.json'
+
+/** Whether a backup target is an extension's install record: restoring it reinstalls the extension. */
+const isInstallRecord = (paths: GeminiPaths, target: string) => {
+  const inside = target.startsWith(`${paths.extensionsDir}/`) ? target.slice(paths.extensionsDir.length + 1) : ''
+  return /^[^/]+\/\.gemini-extension-install\.json$/.test(inside) && !inside.startsWith('.')
+}
+
+/**
+ * `gemini extensions install <source> [--ref r] [--auto-update] [--pre-release] --consent` for an install record,
+ * or null when the record cannot be reinstalled that way: a linked extension (`gemini extensions link`), no source,
+ * a source with a credential in it (it would show in the command), or a value that would be read as an option.
+ * `--consent` accepts the extension's permissions; it only runs once the user approved this exact command.
+ */
+function reinstallArgv(text: string): string[] | null {
+  let record: unknown
+  try {
+    record = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!isObject(record) || !['git', 'github-release', 'local'].includes(String(record.type))) return null
+  const { source, ref } = record
+  if (typeof source !== 'string' || source === '' || source.startsWith('-') || urlHasSecret(source)) return null
+  if (ref !== undefined && (typeof ref !== 'string' || ref === '' || ref.startsWith('-'))) return null
+  return [
+    'extensions',
+    'install',
+    source,
+    ...(typeof ref === 'string' ? ['--ref', ref] : []),
+    ...(record.autoUpdate === true ? ['--auto-update'] : []),
+    ...(record.allowPreRelease === true ? ['--pre-release'] : []),
+    '--consent'
+  ]
+}
+
+/**
+ * Restoring a backup of an install record: reinstalls the extension from it. Without the approval of this exact
+ * command (`acceptCommand` = its sha256), nothing runs and the answer asks for it.
+ */
+async function reinstallExtension(ctx: Context, name: string, target: string, acceptCommand: string | undefined): Promise<ActionResult> {
+  const { fs } = ctx.deps
+  const text = (await listBackups(fs, ctx.paths.backups)).includes(name) ? await fs.readText(`${ctx.paths.backups.dir}/${name}`) : null
+  if (text === null) return refuse('unknown-backup', `${name} is not a known backup.`)
+  const argv = reinstallArgv(text)
+  const dir = target.slice(0, target.lastIndexOf('/'))
+  const extension = dir.slice(dir.lastIndexOf('/') + 1)
+  if (argv === null) return refuse('unsupported', `${name} records no source that gemini extensions install can use, so ${extension} cannot be reinstalled from it.`)
+  if ((await fs.realPath(dir)) !== null) return refuse('exists', `${ctx.say(dir)} is there already: ${extension} is installed.`)
+  const command = `gemini ${argv.join(' ')}`
+  const sha = createHash('sha256').update(command).digest('hex')
+  if (acceptCommand !== sha) {
+    return {
+      ok: false,
+      reason: 'needs-confirmation',
+      message: `Reinstalling ${extension} runs this command, which accepts the extension's permissions for you. Review it, then confirm.`,
+      confirm: { command, action: { type: 'restore', name, acceptCommand: sha } }
+    }
+  }
+  const guarded = await guard(ctx, [ctx.paths.enablement])
+  if (!guarded.ok) return guarded
+  // stdin is closed: a question the install still asks (trusting a local folder) ends the run instead of hanging.
+  const result = await ctx.deps.exec.run('gemini', argv, null, { timeoutMs: 120_000, closeStdin: true })
+  if (!result.ok) return refuse('cli', `${named(argv, extension)} failed: ${tail(result.output) || 'no output'}. To try it in a terminal: ${command}`)
+  if ((await fs.readText(target)) === null) return unchanged(argv, extension, target, result.output, ctx.say)
+  return done(`Reinstalled ${extension} with ${command}.`)
 }
 
 async function updateExtension(ctx: Context, extension: Extension) {
@@ -242,9 +330,9 @@ async function toggleMcp(ctx: Context, key: string, server: McpServer, blocked: 
   )
 }
 
-const scopeArg = (project: string | null) => (project === null ? 'user' : 'project')
+export const scopeArg = (project: string | null) => (project === null ? 'user' : 'project')
 
-const hasServer = async (ctx: Context, file: string, name: string) => {
+export const hasServer = async (ctx: Context, file: string, name: string) => {
   const settings = await objectAt(ctx.deps, file, true)
   return settings !== null && isObject(settings.mcpServers) && isObject(settings.mcpServers[name])
 }

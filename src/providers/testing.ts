@@ -6,7 +6,7 @@ import { fakeFs } from '../core/test-support.ts'
 import type { CliResult, CommandRunner } from '../core/ports.ts'
 import type { Action, ActionResult, ActionType, AgentInfo, Kind, View } from '../adapters/view.ts'
 import { routeAction, routeView } from './router.ts'
-import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
+import { ACTION_TYPES, BACKUP_ACTIONS, KINDS, PORTABLE_KINDS, type AgentProvider, type ProviderDeps, type ProviderView } from './types.ts'
 
 export { fakeFs }
 
@@ -55,16 +55,16 @@ export interface ContractFixture {
 }
 
 /**
- * What is wrong with `info.projectScopes`: it must exist, list only classes whose `supports` include 'move',
- * and name each of 'local' and 'project' at most once. Empty when it is right.
+ * What is wrong with `info.projectScopes`: it must exist, list only classes whose `supports` include 'move' or
+ * which the agent `imports`, and name each of 'local' and 'project' at most once. Empty when it is right.
  */
 export function projectScopeProblems(info: AgentInfo): string[] {
   if (info.projectScopes === null || typeof info.projectScopes !== 'object') return ['projectScopes is missing']
   const problems: string[] = []
   for (const [kind, scopes] of Object.entries(info.projectScopes)) {
     const list: string[] = scopes ?? []
-    if (list.length > 0 && !(info.supports[kind as Kind] ?? []).includes('move')) {
-      problems.push(`projectScopes lists ${kind}, whose supports do not include move`)
+    if (list.length > 0 && !(info.supports[kind as Kind] ?? []).includes('move') && !(info.imports ?? []).includes(kind as Kind)) {
+      problems.push(`projectScopes lists ${kind}, whose supports do not include move and which it does not import`)
     }
     list.forEach((scope, i) => {
       if (list.indexOf(scope) !== i) problems.push(`projectScopes.${kind} lists ${JSON.stringify(scope)} twice`)
@@ -137,6 +137,13 @@ export function providerContract(provider: AgentProvider, fixture: ContractFixtu
       for (const action of actions ?? []) assert.ok(ACTION_TYPES.includes(action), `unknown action ${action}`)
     }
     assert.deepEqual(projectScopeProblems(info), [], 'projectScopes')
+    for (const side of ['exports', 'imports'] as const) {
+      for (const kind of info[side] ?? []) {
+        assert.ok(info.kinds.includes(kind) && PORTABLE_KINDS.includes(kind), `${side} lists ${kind}, which is not a kind it has that copyToAgent carries`)
+      }
+    }
+    if ((info.exports ?? []).length > 0) assert.equal(typeof provider.exportItem, 'function', 'exports are listed, so exportItem must exist')
+    if ((info.imports ?? []).length > 0) assert.equal(typeof provider.importItem, 'function', 'imports are listed, so importItem must exist')
     assert.equal(typeof info.configHome, 'string')
     assert.ok(info.configHome !== '')
   })

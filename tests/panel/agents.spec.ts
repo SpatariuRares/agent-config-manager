@@ -100,11 +100,11 @@ test('actions the agent does not support are not offered', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Check for updates' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Create backup' })).toBeVisible()
 
-  // Skills are writable: drag, Move/Copy and Remove, but nothing to update.
+  // Skills are writable: drag, Move/Copy, Copy to agent (Claude Code imports skills) and Remove, but nothing to update.
   await tab(page, 'Skills').click()
   await expect(item(page, 'openai-docs')).toHaveAttribute('draggable', 'true')
   await item(page, 'openai-docs').getByRole('button', { name: 'Actions for openai-docs' }).click()
-  await expect(page.getByRole('menuitem')).toHaveText(['Move to…', 'Copy to…', 'Remove'])
+  await expect(page.getByRole('menuitem')).toHaveText(['Move to…', 'Copy to…', 'Copy to agent…', 'Remove'])
   await page.keyboard.press('Escape')
 
   // Agents and hooks are read-only.
