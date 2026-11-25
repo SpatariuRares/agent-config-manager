@@ -6,6 +6,7 @@ import {
   describeMcp,
   existingProjects,
   isObject,
+  itemIndex,
   itemKey,
   listAllBackups,
   readAgents,
@@ -15,6 +16,7 @@ import {
   sameFolder,
   versionOf,
   type FileSystem,
+  type ItemIndex,
   type Json,
   type McpConfig,
   type ProviderView
@@ -242,7 +244,8 @@ export type Ref =
 
 export interface Setup {
   view: ProviderView
-  refs: Map<string, Ref>
+  /** The view's items, and the way back from a key to the item and its ref. */
+  index: ItemIndex<Ref>
   /** Known projects: those in ~/.gemini/projects.json that exist, without the home folder. */
   projects: string[]
   /** Every settings place: global first, then each project, with its parsed file. */
@@ -257,13 +260,8 @@ const off = (description: string, reason: string | null) => (reason === null ? d
 export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Setup> {
   const versions: Record<string, string> = {}
   const problems: string[] = []
-  const items: Item[] = []
-  const refs = new Map<string, Ref>()
-  const add = (item: Omit<Item, 'agent'>, ref: Ref) => {
-    if (refs.has(item.key)) return
-    items.push({ agent: GEMINI, ...item })
-    refs.set(item.key, ref)
-  }
+  const index = itemIndex<Ref>()
+  const add = (item: Omit<Item, 'agent'>, ref: Ref) => void index.add({ agent: GEMINI, ...item }, ref)
 
   const registry = (await readObject(fs, paths.projects, versions, problems, false)).json
   const candidates = isObject(registry.projects) ? Object.keys(registry.projects) : []
@@ -424,11 +422,11 @@ export async function readSetup(fs: FileSystem, paths: GeminiPaths): Promise<Set
 
   const backups = (await listAllBackups(fs, paths.backups)).map(({ name, target, at }) => ({ name, target, at }))
   const order: Kind[] = ['plugins', 'skills', 'agents', 'mcp', 'hooks']
-  items.sort(
+  const built = index.build(
     (a, b) =>
       order.indexOf(a.kind) - order.indexOf(b.kind) ||
       (a.project === null ? 0 : 1) - (b.project === null ? 0 : 1) ||
       (a.project ?? '').localeCompare(b.project ?? '')
   )
-  return { view: { items, projects, versions, backups, problems }, refs, projects, places, enablement }
+  return { view: { items: built.items, projects, versions, backups, problems }, index: built, projects, places, enablement }
 }

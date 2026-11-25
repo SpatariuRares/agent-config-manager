@@ -6,7 +6,8 @@ import { isObject } from '../core/json.ts'
 import type { Http } from '../core/ports.ts'
 import type { Action, ActionAnswer, ActionRequest, ActionResult, AgentInfo, AgentRequest, Kind, ProjectScope, UpdatesAnswer, ViewAnswer } from '../adapters/view.ts'
 import { runBackupAction } from './backup-actions.ts'
-import { ACTION_TYPES, BACKUP_ACTIONS, isKind, kindOfKey, type AgentProvider, type ProviderDeps } from './types.ts'
+import { GONE, kindOfKey } from './item-index.ts'
+import { ACTION_TYPES, BACKUP_ACTIONS, isKind, type AgentProvider, type ProviderDeps } from './types.ts'
 
 export type ProviderLookup = { ok: true; provider: AgentProvider } | { ok: false; reason: 'unknown-agent'; message: string }
 
@@ -101,7 +102,7 @@ async function copied(deps: ProviderDeps, providers: readonly AgentProvider[], s
   const from = await source.info(deps)
   if (!from.detected) return notDetected(from, 'copied')
   const kind = kindOfKey(action.key)
-  if (kind === null) return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
+  if (kind === null) return GONE
   const note = (info: AgentInfo) => (info.note ? ` ${info.note}` : '')
   if (!from.kinds.includes(kind) || !(from.exports ?? []).includes(kind) || source.exportItem === undefined) {
     return { ok: false, reason: 'unsupported', message: `${from.name} cannot copy ${kind} to another agent here.${note(from)}` }
@@ -123,7 +124,7 @@ async function copied(deps: ProviderDeps, providers: readonly AgentProvider[], s
   if (scoped !== null) return scoped
   const exported = await source.exportItem(deps, action.key)
   if (!exported.ok) return { ...exported, message: `${from.name}: ${exported.message}` }
-  if (exported.item.kind !== kind) return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
+  if (exported.item.kind !== kind) return GONE
   // The request's versions are the source's (the panel has no view of the target), so they are not used for the
   // target: its own versions are read here, just before the write, which refuses a file that changes in between.
   // That a server or skill of the same name is already there is the target's own check (`exists`), made at write
@@ -159,7 +160,7 @@ export function refusal(info: AgentInfo, action: Action): (ActionResult & { ok: 
         : kindOfKey((action as { key?: unknown }).key)
   if (kind === null) {
     if (action.type === 'updateAll') return { ok: false, reason: 'unsupported', message: 'There is nothing to update.' }
-    return { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
+    return GONE
   }
   if (!info.kinds.includes(kind) || !declared(kind)) return unsupported(`for ${kind}`)
   return action.type === 'move' ? scopeRefusal(info, kind, action.to) : null

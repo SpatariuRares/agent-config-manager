@@ -34,7 +34,6 @@ type Refused = ActionResult & { ok: false }
 
 export const done = (message: string, undo?: Action, warning?: string): Done => ({ ok: true, message, ...(undo ? { undo } : {}), ...(warning ? { warning } : {}) })
 export const refuse = (reason: string, message: string): Refused => ({ ok: false, reason, message })
-const GONE = refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
 
 /** A JSON (or JSONC) file as an object; null when it exists but is not one. */
 async function objectAt(fs: FileSystem, file: string, comments: boolean): Promise<Json | null> {
@@ -104,9 +103,10 @@ export async function geminiAction(deps: ProviderDeps, paths: GeminiPaths, reque
   const { action } = request
   const setup = await readSetup(deps.fs, paths)
 
-  const key = (action as { key?: unknown }).key
-  const ref = typeof key === 'string' ? setup.refs.get(key) : undefined
-  if (ref === undefined || typeof key !== 'string') return GONE
+  const found = setup.index.lookup((action as { key?: unknown }).key)
+  if (!found.ok) return found
+  const { ref } = found
+  const key = found.item.key
 
   if (ref.kind === 'plugins') {
     const { extension, project } = ref

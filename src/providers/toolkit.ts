@@ -20,7 +20,7 @@ export {
 } from '../core/guarded-change.ts'
 // The per-agent backup store: a restorable trash for removed entries, and the list the view shows. Restore and
 // snapshot are not the provider's: it declares a BackupPlan and the router runs them (./backup-actions.ts).
-export { backupTarget, isTrashName, listAllBackups, listBackups, trashEntry, type BackupInfo, type BackupStore, type TrashResult } from '../core/backups.ts'
+export { backUp, backupTarget, isTrashName, listAllBackups, listBackups, trashEntry, type BackupInfo, type BackupStore, type TrashResult } from '../core/backups.ts'
 export type { BackupPlan, OwnedFile, RestoreRequest } from './backup-actions.ts'
 // Path guards and known projects.
 export { appBackupDir, existingProjects, occupied, sameFolder, tilde } from '../core/paths.ts'
@@ -32,9 +32,9 @@ export { moveEntry, readEntryDir, type EntryKind, type EntryPlaces, type EntryRe
 export { optionLikeRefusal, shellQuote } from '../core/cli.ts'
 // Secret-safe text: MCP args and URLs, hook commands and CLI output pass through these before an item or a message shows them.
 export { argsHaveSecret, looksSecret, REDACTED, redactArgs, redactCommand, redactUrl, urlHasSecret } from '../core/redact.ts'
-// Item keys the router can read the kind from.
+// Item keys and the key -> ref index: build the view through itemIndex, resolve an action's key with lookup.
+export { decodeKey, GONE, itemIndex, itemKey, type DecodedKey, type Found, type IndexBuilder, type ItemIndex, type KeyPart } from './item-index.ts'
 export {
-  itemKey,
   KINDS,
   type AgentProvider,
   type Exported,

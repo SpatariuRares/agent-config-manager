@@ -12,6 +12,7 @@ import type { ActionRequest, ActionResult, Kind } from '../../adapters/view.ts'
 import {
   admitMcp,
   guardedChange,
+  GONE,
   isObject,
   itemKey,
   moveEntry,
@@ -67,15 +68,16 @@ export async function runCopilotAction(deps: ProviderDeps, paths: CopilotPaths, 
   const { fs } = deps
   const clock = deps.clock ?? (() => new Date())
   const { action, versions } = request
-  const { view, refs } = await readCopilot(fs, paths)
+  const { view, index } = await readCopilot(fs, paths)
   const where = (project: string | null) => (project === null ? 'global' : tilde(paths.home, project))
 
   if (action.type !== 'move' && action.type !== 'remove') return fail('unsupported', `${OWNER} cannot do "${action.type}" here.`)
 
-  const item = view.items.find((candidate) => candidate.key === action.key)
-  if (item === undefined) return fail('changed', 'That item is no longer there. The view was refreshed; try again.')
-  const ref = refs.get(item.key)
-  if (ref === undefined) return fail('not-movable', `"${item.name}" is read-only here. ${item.notMovableReason ?? ''}`.trim())
+  const item = index.item(action.key)
+  if (item === undefined) return GONE
+  const found = index.lookup(item.key)
+  if (!found.ok || !item.movable) return fail('not-movable', `"${item.name}" is read-only here. ${item.notMovableReason ?? ''}`.trim())
+  const { ref } = found
 
   if (action.type === 'remove') {
     if (ref.kind === 'mcp') return removeServer(changeDeps(deps, paths), paths, ref, versions)

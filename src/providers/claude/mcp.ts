@@ -2,15 +2,23 @@
 // Claude Code all the time, so it is read here but never written. Each write is a guarded change: the files the CLI
 // changes are version checked and backed up first, `claude mcp add-json|remove` runs by argv, then the file is read
 // again to prove the server is there (or gone), since a CLI can exit 0 and change nothing.
-import { claudeMcpConfig, isObject, knownProjects, type Json } from './inventory.ts'
-import { optionLikeRefusal } from '../../core/cli.ts'
-import { guardedChange, type ChangeResult, type Step } from '../../core/guarded-change.ts'
-import type { FileSystem } from '../../core/ports.ts'
-import { admitMcp, commandLine, type Admitted, type Carries, type McpConfig } from '../mcp-policy.ts'
-import { mcpJson } from '../portable.ts'
-import type { ClaudeDeps, ClaudePaths } from './ports.ts'
+import { claudeBackups, claudeMcpConfig, claudePaths, isObject, knownProjects, type ClaudePaths, type Json } from './inventory.ts'
+import {
+  admitMcp,
+  commandLine,
+  guardedChange,
+  mcpJson,
+  optionLikeRefusal,
+  type Admitted,
+  type Carries,
+  type ChangeResult,
+  type Clock,
+  type FileSystem,
+  type McpConfig,
+  type ProviderDeps,
+  type Step
+} from '../toolkit.ts'
 import { mcpFile, type Place } from './setup.ts'
-import { claudeBackups, type Clock } from './toggle.ts'
 
 export interface McpRef extends Place {
   name: string
@@ -44,8 +52,8 @@ function mcpStep(paths: ClaudePaths, name: string, place: Place, json?: string):
  * Code rewrites it all the time (sessions, history, caches), so the view's version of it is always stale, and only
  * its own CLI writes it here.
  */
-function change(deps: Pick<ClaudeDeps, 'fs' | 'exec' | 'paths'>, clock: Clock, places: Place[], versions: Record<string, string>, steps: [Step] | [Step, Step]) {
-  const { paths } = deps
+function change(deps: ProviderDeps, clock: Clock, places: Place[], versions: Record<string, string>, steps: [Step] | [Step, Step]) {
+  const paths = claudePaths(deps.home)
   return guardedChange(
     { fs: deps.fs, exec: deps.exec, store: claudeBackups(paths), clock },
     { files: [...new Set(places.map((place) => mcpPlaceFile(paths, place)))], versions, unversioned: [paths.userConfigFile], steps }
@@ -58,8 +66,9 @@ const optionLike = (name: string): McpResult | null => {
   return refused === null ? null : refuse('refused', refused.output)
 }
 
-export async function moveMcp(deps: ClaudeDeps, ref: McpRef, to: Place, versions: Record<string, string>, copy: boolean, clock: Clock): Promise<McpResult> {
-  const { fs, paths } = deps
+export async function moveMcp(deps: ProviderDeps, ref: McpRef, to: Place, versions: Record<string, string>, copy: boolean, clock: Clock): Promise<McpResult> {
+  const { fs } = deps
+  const paths = claudePaths(deps.home)
   if (to.project === ref.project && cliScope(to) === cliScope(ref)) return refuse('same-place', `"${ref.name}" is already there.`)
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
     return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
@@ -75,8 +84,8 @@ export async function moveMcp(deps: ClaudeDeps, ref: McpRef, to: Place, versions
   return copy ? change(deps, clock, [to], versions, [add]) : change(deps, clock, [to, ref], versions, [add, mcpStep(paths, ref.name, ref)])
 }
 
-export async function removeMcp(deps: ClaudeDeps, ref: McpRef, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
-  return optionLike(ref.name) ?? change(deps, clock, [ref], versions, [mcpStep(deps.paths, ref.name, ref)])
+export async function removeMcp(deps: ProviderDeps, ref: McpRef, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  return optionLike(ref.name) ?? change(deps, clock, [ref], versions, [mcpStep(claudePaths(deps.home), ref.name, ref)])
 }
 
 /**
@@ -103,8 +112,9 @@ export const claudeJson = (server: Extract<Admitted, { ok: true }>['server']): J
  * change; a name already there is refused. The caller has admitted the server against admitClaude (add-json takes
  * the whole config on its command line).
  */
-export async function addMcp(deps: ClaudeDeps, name: string, config: Json, to: Place, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
-  const { fs, paths } = deps
+export async function addMcp(deps: ProviderDeps, name: string, config: Json, to: Place, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  const { fs } = deps
+  const paths = claudePaths(deps.home)
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
     return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
   }
@@ -138,7 +148,7 @@ async function serversAt(fs: FileSystem, paths: ClaudePaths, place: Place): Prom
  * as one guarded change. A failed remove changes nothing; a failed add after it is `partial` (the server is gone,
  * its old config is in the backup the message names).
  */
-export async function replaceMcp(deps: ClaudeDeps, ref: McpRef, config: Json, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
-  const { paths } = deps
+export async function replaceMcp(deps: ProviderDeps, ref: McpRef, config: Json, versions: Record<string, string>, clock: Clock): Promise<McpResult> {
+  const paths = claudePaths(deps.home)
   return optionLike(ref.name) ?? change(deps, clock, [ref], versions, [mcpStep(paths, ref.name, ref), mcpStep(paths, ref.name, ref, JSON.stringify(config))])
 }

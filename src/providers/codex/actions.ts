@@ -2,10 +2,12 @@
 // (format-preserving toml_edit inside Codex) as guarded changes (version check, backup of config.toml, the CLI,
 // then a re-read that proves the server is there or gone). Skill folders and agent files are moved, copied and
 // trashed through the core toolkit. Restore and snapshot are the router's, from codexBackupPlan.
-import type { Action, ActionRequest, ActionResult } from '../../adapters/view.ts'
+import type { Action, ActionRequest, ActionResult, Item } from '../../adapters/view.ts'
 import {
   admitMcp,
   backupTarget,
+  decodeKey,
+  GONE,
   guardedChange,
   isObject,
   itemKey,
@@ -28,7 +30,6 @@ import type { Admitted, Json } from '../toolkit.ts'
 /** `codex mcp add/remove` can take a while on first run; never wait forever. */
 const CLI_TIMEOUT_MS = 60_000
 
-const GONE: ActionResult = { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' }
 const refuse = (reason: string, message: string): ActionResult & { ok: false } => ({ ok: false, reason, message })
 const clockOf = (deps: ProviderDeps) => deps.clock ?? (() => new Date())
 const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
@@ -36,16 +37,17 @@ const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 export async function codexAction(deps: ProviderDeps, request: ActionRequest): Promise<ActionResult> {
   const read = await readCodex(deps)
   const { action, versions } = request
-  const refOf = (key: string) => read.refs.get(key)
   switch (action.type) {
     case 'move': {
-      const ref = refOf(action.key)
-      if (ref === undefined) return addBackFromBackup(deps, action, versions)
-      return ref.kind === 'mcp' ? copyServer(deps, read, ref, action, versions) : moveFile(deps, read, ref, action, versions)
+      const found = read.index.lookup(action.key)
+      if (!found.ok) return addBackFromBackup(deps, action, versions)
+      const { item, ref } = found
+      return ref.kind === 'mcp' ? copyServer(deps, item, ref, action, versions) : moveFile(deps, read, ref, action, versions)
     }
     case 'remove': {
-      const ref = refOf(action.key)
-      if (ref === undefined) return GONE
+      const found = read.index.lookup(action.key)
+      if (!found.ok) return found
+      const { ref } = found
       return ref.kind === 'mcp' ? removeServer(deps, ref, versions) : trashFile(deps, ref, versions)
     }
     default:
@@ -184,20 +186,15 @@ export async function addServer(
 }
 
 /**
- * The undo of a remove: `move` (a copy to global) of a key that names a server in a backup of ~/.codex/config.toml.
- * Anything else is an item that is no longer there.
+ * The undo of a remove: `move` (a copy to global) of a key whose parts are a backup of ~/.codex/config.toml and a
+ * server name in it (itemKey('mcp', backup, name), read back with decodeKey). Anything else is GONE.
  */
 async function addBackFromBackup(deps: ProviderDeps, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
   const paths = codexPaths(deps.home)
   const store = codexBackups(paths)
-  let parts: unknown
-  try {
-    parts = JSON.parse(action.key.slice('mcp:'.length))
-  } catch {
-    return GONE
-  }
-  if (!action.key.startsWith('mcp:') || !Array.isArray(parts) || parts.length !== 2 || !parts.every((part) => typeof part === 'string')) return GONE
-  const [file, name] = parts as [string, string]
+  const decoded = decodeKey(action.key)
+  if (decoded?.kind !== 'mcp' || decoded.parts.length !== 2 || !decoded.parts.every((part) => typeof part === 'string')) return GONE
+  const [file, name] = decoded.parts as [string, string]
   const backup = baseName(file)
   if (file !== `${store.dir}/${backup}` || backupTarget(store, backup) !== paths.config || !(await listBackups(deps.fs, store)).includes(backup)) return GONE
   if (action.to?.project !== null || action.copy !== true) return refuse('not-movable', 'A server in a backup can only be added back to ~/.codex/config.toml.')
@@ -223,11 +220,10 @@ async function addBackFromBackup(deps: ProviderDeps, action: Action & { type: 'm
   }
 }
 
-async function copyServer(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind: 'mcp' }, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
-  const item = read.view.items.find((candidate) => candidate.key === action.key)
-  if (ref.project === null || action.to.project !== null) return refuse('not-movable', item?.notMovableReason ?? 'Codex MCP servers can only be copied from a project to global.')
+async function copyServer(deps: ProviderDeps, item: Item, ref: Ref & { kind: 'mcp' }, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
+  if (ref.project === null || action.to.project !== null) return refuse('not-movable', item.notMovableReason ?? 'Codex MCP servers can only be copied from a project to global.')
   if (!action.copy) return refuse('not-movable', 'This app never rewrites a project .codex/config.toml, so a project server can only be copied to global.')
-  if (!item?.movable) return refuse('not-movable', item?.notMovableReason ?? `"${ref.name}" cannot be copied.`)
+  if (!item.movable) return refuse('not-movable', item.notMovableReason ?? `"${ref.name}" cannot be copied.`)
   const admitted = admitMcp(codexMcpConfig(ref.name, ref.server), CODEX_ADD)
   if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
   const optionLike = addableServer(ref.name, admitted.server.command!)

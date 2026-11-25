@@ -7,10 +7,10 @@ import type { CliResult, CommandRunner, FileSystem } from './ports.ts'
  * Paths are normalized like a real disk (`//` and `..`), so aliases reach the same file.
  * `links` maps a symlink path to its text (absolute, or relative to the link's folder).
  */
-export function fakeFs(
-  files: Record<string, string>,
-  links: Record<string, string> = {}
-): FileSystem & { files: Record<string, string>; links: Record<string, string> } {
+/** An in-memory FileSystem whose files and links a test can read and change directly. */
+export type FakeFs = FileSystem & { files: Record<string, string>; links: Record<string, string> }
+
+export function fakeFs(files: Record<string, string>, links: Record<string, string> = {}): FakeFs {
   const norm = (path: string) => posix.normalize(path).replace(/(.)\/$/, '$1')
   /** Follows every link on the way, like the kernel does. */
   const resolve = (path: string): string => {

@@ -6,6 +6,7 @@ import {
   describeMcp,
   existingProjects,
   isObject,
+  itemIndex,
   itemKey,
   listAllBackups,
   parseObject,
@@ -17,24 +18,25 @@ import {
   versionOf,
   type EntryRef,
   type FileSystem,
+  type ItemIndex,
   type Json,
   type McpConfig,
   type ProviderView
 } from '../toolkit.ts'
 import { COPILOT, placesOf, type CopilotPaths, type Place } from './paths.ts'
 
-/** What a write needs to know about a writable item, by key. */
+/**
+ * What a write (and 'copyToAgent') needs to know about a skill, an agent or an MCP server, by key. Every one has a
+ * ref, read-only places included (an export only reads); a write refuses an item that is not movable as read-only.
+ */
 export type Ref =
   | { kind: 'skills' | 'agents'; project: string | null; entry: EntryRef }
   | { kind: 'mcp'; project: string | null; file: string; name: string; config: Json }
 
-/** What 'copyToAgent' reads of a skill or an MCP server, by key: every one, read-only places included. */
-export type Source = { kind: 'skills'; name: string; dir: string } | { kind: 'mcp'; name: string; config: Json }
-
 export interface Inventory {
   view: ProviderView
-  refs: Map<string, Ref>
-  sources: Map<string, Source>
+  /** The view's items, and the way back from a key to the item and its ref. */
+  index: ItemIndex<Ref>
 }
 
 const SHARED = 'Shared with other agents (it is not in a Copilot folder), so it is read-only here.'
@@ -46,16 +48,9 @@ const READ_ONLY: Partial<Record<Kind, string>> = {
 export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<Inventory> {
   const problems: string[] = []
   const versions: Record<string, string> = {}
-  const items: Item[] = []
-  const refs = new Map<string, Ref>()
-  const sources = new Map<string, Source>()
-  // The home folder can be a trusted project too; then a shared folder is read twice. Keys keep it once.
-  // Only items in a writable place get a Ref: without one, every write refuses the item as read-only.
-  const add = (item: Item, ref?: Ref) => {
-    if (items.some((other) => other.key === item.key)) return
-    items.push(item)
-    if (ref && item.movable) refs.set(item.key, ref)
-  }
+  // The home folder can be a trusted project too; then a shared folder is read twice. The index keeps it once.
+  const index = itemIndex<Ref>()
+  const add = (item: Item, ref?: Ref) => void index.add(item, ref)
   const base = (kind: Kind, key: string, name: string, project: string | null, source: string, place: Place): Item => ({
     key,
     agent: COPILOT,
@@ -88,7 +83,6 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
         for (const entry of await readEntryDir(fs, kind, place.path, kind === 'skills' ? readSkills : readAgentFiles)) {
           const key = itemKey(kind, entry.entry)
           add({ ...base(kind, key, entry.name, project, entry.path, place), description: entry.description }, { kind, project, entry })
-          if (kind === 'skills' && !sources.has(key)) sources.set(key, { kind, name: entry.name, dir: entry.entry })
         }
       }
     }
@@ -99,7 +93,6 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
       for (const [name, config] of serversIn(text, place.path, problems)) {
         const key = itemKey('mcp', place.path, name)
         add({ ...base('mcp', key, name, project, place.path, place), mcp: describeMcp(copilotMcpConfig(name, config)) }, { kind: 'mcp', project, file: place.path, name, config })
-        if (!sources.has(key)) sources.set(key, { kind: 'mcp', name, config })
       }
     }
     for (const place of placesOf(paths, 'hooks', project)) {
@@ -118,7 +111,8 @@ export async function readCopilot(fs: FileSystem, paths: CopilotPaths): Promise<
   }
 
   const backups = (await listAllBackups(fs, paths.store)).map(({ name, target, at }) => ({ name, target, at }))
-  return { view: { items, projects, versions, backups, problems }, refs, sources }
+  const built = index.build()
+  return { view: { items: built.items, projects, versions, backups, problems }, index: built }
 }
 
 /**

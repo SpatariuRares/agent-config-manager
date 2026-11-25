@@ -1,10 +1,9 @@
 // The whole setup per scope: every class globally and in each known project. Read-only.
-import type { EntryKind } from '../../core/entries.ts'
-import { sameFolder } from '../../core/paths.ts'
-import type { FileSystem } from '../../core/ports.ts'
+import { sameFolder, type EntryKind, type FileSystem } from '../toolkit.ts'
 import {
   hookEntries,
   isObject,
+  knownProjects,
   isUserSettingsFile,
   mcpServersOf,
   projectSettingsFile,
@@ -18,12 +17,10 @@ import {
   type Json,
   type McpServer,
   type ProjectScope,
+  type ClaudePaths,
   type Skill
 } from './inventory.ts'
-import type { ClaudePaths } from './ports.ts'
 
-export { sameFolder } from '../../core/paths.ts'
-export type { EntryKind } from '../../core/entries.ts'
 
 export type Scope = 'user' | ProjectScope
 
@@ -73,6 +70,22 @@ export const mcpFile = (project: string) => `${project}/.mcp.json`
 /** The settings file of a place: user settings, or a project's team or only-me file. */
 export const placeFile = (paths: ClaudePaths, place: Place) =>
   place.project === null ? settingsFile(paths) : projectSettingsFile(place.project, place.scope === 'project' ? 'project' : 'local')
+
+/** Why this app must not write `file` as a file of `project` (null: the user settings file), or null when it may. */
+export async function writeRefusal(fs: FileSystem, paths: ClaudePaths, project: string | null, file: string): Promise<{ ok: false; reason: string; message: string } | null> {
+  if (project === null) return file === settingsFile(paths) ? null : { ok: false, reason: 'unknown-project', message: `${file} is not the user settings file.` }
+  if (!(await knownProjects(fs, paths)).includes(project)) {
+    return { ok: false, reason: 'unknown-project', message: `${project || file} is not a project Claude Code knows.` }
+  }
+  if (await isUserSettingsFile(fs, paths, file)) {
+    return {
+      ok: false,
+      reason: 'unknown-project',
+      message: `${project} is your home folder: its team settings are the global settings. Use "Only me" or the global switch.`
+    }
+  }
+  return null
+}
 
 export async function readSetup(fs: FileSystem, paths: ClaudePaths): Promise<Setup> {
   const inventory = await readInventory(fs, paths)

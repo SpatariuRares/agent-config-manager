@@ -43,7 +43,8 @@ export interface AgentProvider {
   /**
    * Everything the agent has, globally and per project. May throw; the router turns that into `{ ok: false }`.
    * Rules (checked by providerContract): every Item has `agent: this.id`, a kind listed in `info().kinds`,
-   * and a unique `key` that starts with `<kind>:` (the router reads the kind from it).
+   * and a unique `key` built with itemKey (./item-index.ts; the router reads the kind from it). Build the items
+   * through itemIndex while reading, and resolve an action's key through the same index.
    * `versions` holds versionOf() of every file read, so a later write can refuse a concurrent change.
    */
   buildView(deps: ProviderDeps): Promise<ProviderView>
@@ -137,14 +138,4 @@ export const ACTION_TYPES: readonly ActionType[] = [
  */
 export const BACKUP_ACTIONS: readonly ActionType[] = ['restore', 'snapshot']
 
-/** Builds an item key the router can read the kind from: `<kind>:<JSON of parts>`. */
-export const itemKey = (kind: Kind, ...parts: (string | number | null)[]) => `${kind}:${JSON.stringify(parts)}`
-
 export const isKind = (value: unknown): value is Kind => typeof value === 'string' && (KINDS as readonly string[]).includes(value)
-
-/** The kind an item key names, or null when it names none. */
-export function kindOfKey(key: unknown): Kind | null {
-  if (typeof key !== 'string' || !key.includes(':')) return null
-  const kind = key.slice(0, key.indexOf(':'))
-  return isKind(kind) ? kind : null
-}

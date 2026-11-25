@@ -1,8 +1,9 @@
 // The panel contract end to end over in-memory doubles: buildView and runAction.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { hookKey } from '../providers/claude/actions.ts'
-import { buildView, fakeCli, fakeFs, paths, runAction } from '../providers/claude/test-support.ts'
+import { createHash } from 'node:crypto'
+import { itemKey } from '../providers/item-index.ts'
+import { buildView, fakeClaude, fakeFs, runAction } from '../providers/claude/test-support.ts'
 import { actionQueue } from './backend.ts'
 import type { Action, ActionAnswer, Item, View } from './view.ts'
 
@@ -51,7 +52,7 @@ function setup(extra: Record<string, string> = {}, links: Record<string, string>
     },
     links
   )
-  return { fs, cli: fakeCli(), paths, clock: () => new Date('2026-11-24T10:00:00.000Z') }
+  return { fs, exec: fakeClaude(fs), clock: () => new Date('2026-11-24T10:00:00.000Z') }
 }
 
 type Deps = ReturnType<typeof setup>
@@ -101,7 +102,7 @@ test('lists every class globally and per project, each item with its scope and s
   ])
   assert.deepEqual(v.projects, [BLOG, SHOP])
   assert.equal(new Set(v.items.map((i) => i.key)).size, v.items.length)
-  assert.equal(find(v, 'skills', 'review').key, 'skills:/home/.claude/skills/review/SKILL.md')
+  assert.equal(find(v, 'skills', 'review').key, itemKey('skills', '/home/.claude/skills/review'))
   assert.deepEqual(find(v, 'mcp', 'db', SHOP).mcp, { transport: 'stdio', target: 'db-server --port 1' })
   assert.deepEqual(find(v, 'hooks', 'echo user').hook, { event: 'PreToolUse', matcher: 'Bash', command: 'echo user' })
   assert.deepEqual(find(v, 'hooks', 'say done', SHOP).hook, { event: 'Stop', matcher: '*', command: 'say done' })
@@ -149,12 +150,14 @@ test('a home folder listed as a project does not repeat the global skills and se
 })
 
 const versionsOf = (answer: ActionAnswer) => (answer.view.ok ? answer.view.view.versions : {})
-const userKey = (id: string) => `plugins:${JSON.stringify([null, 'user', id])}`
-const overrideKey = (project: string, scope: string, id: string) => `plugins:${JSON.stringify([project, scope, id])}`
-const mcpKeyOf = (project: string | null, scope: string, name: string) => `mcp:${JSON.stringify([project, scope, name])}`
-const hookKeyOf = (file: string, event: string, matcher: string, command: string) => hookKey(file, event, matcher, command, 0)
+const userKey = (id: string) => itemKey('plugins', null, 'user', id)
+const overrideKey = (project: string, scope: string, id: string) => itemKey('plugins', project, scope, id)
+const mcpKeyOf = (project: string | null, scope: string, name: string) => itemKey('mcp', project, scope, name)
+/** A hook's key: its command is hashed, so a secret in it never reaches the panel through the key. */
+const hookKeyOf = (file: string, event: string, matcher: string, command: string) =>
+  itemKey('hooks', file, event, matcher, createHash('sha256').update(command).digest('hex').slice(0, 16), 0)
 const REVIEW = '/home/.claude/skills/review'
-const REVIEW_KEY = 'skills:/home/.claude/skills/review/SKILL.md'
+const REVIEW_KEY = itemKey('skills', '/home/.claude/skills/review')
 
 // ---- skills and agents (S5, S7)
 
@@ -168,7 +171,7 @@ test('moving a skill to a project moves its folder, offers a move back, and touc
   assert.equal(deps.fs.files[USER], settingsBefore)
   assert.match(result.message, /^Moved skill "review" from global to \/work\/shop\./)
   assert.match(result.message, new RegExp(NOTE.replace(/[./]/g, '\\$&')))
-  const movedKey = 'skills:/work/shop/.claude/skills/review/SKILL.md'
+  const movedKey = itemKey('skills', '/work/shop/.claude/skills/review')
   assert.deepEqual(result.undo, { type: 'move', key: movedKey, to: { project: null }, copy: false })
   assert.ok(answer.view.ok && answer.view.view.items.some((i) => i.key === movedKey))
 
@@ -179,11 +182,11 @@ test('moving a skill to a project moves its folder, offers a move back, and touc
 
 test('copying an agent keeps the original, and its undo removes the copy', async () => {
   const deps = setup()
-  const result = ok(await run(deps, { type: 'move', key: 'agents:/home/.claude/agents/helper.md', to: { project: BLOG }, copy: true }))
+  const result = ok(await run(deps, { type: 'move', key: itemKey('agents', '/home/.claude/agents/helper.md'), to: { project: BLOG }, copy: true }))
   assert.equal(deps.fs.files['/work/blog/.claude/agents/helper.md'], '---\ndescription: Helps\n---\n')
   assert.equal(deps.fs.files['/home/.claude/agents/helper.md'], '---\ndescription: Helps\n---\n')
   assert.match(result.message, /^Copied agent "helper" from global to \/work\/blog\./)
-  assert.deepEqual(result.undo, { type: 'remove', key: 'agents:/work/blog/.claude/agents/helper.md' })
+  assert.deepEqual(result.undo, { type: 'remove', key: itemKey('agents', '/work/blog/.claude/agents/helper.md') })
 })
 
 test('a move refuses when the destination already has an item with that name, and changes nothing', async () => {
@@ -196,14 +199,14 @@ test('a move refuses when the destination already has an item with that name, an
 
 test('a symlinked skill moves as a link; its target stays put', async () => {
   const deps = setup({ '/dots/linked/SKILL.md': 'linked' }, { '/home/.claude/skills/linked': '/dots/linked' })
-  ok(await run(deps, { type: 'move', key: 'skills:/home/.claude/skills/linked/SKILL.md', to: { project: SHOP }, copy: false }))
+  ok(await run(deps, { type: 'move', key: itemKey('skills', '/home/.claude/skills/linked'), to: { project: SHOP }, copy: false }))
   assert.deepEqual(deps.fs.links, { '/work/shop/.claude/skills/linked': '/dots/linked' })
   assert.equal(deps.fs.files['/dots/linked/SKILL.md'], 'linked')
 })
 
 test('a relative-link skill is refused for move', async () => {
   const deps = setup({ '/home/.claude/rel/SKILL.md': 'r' }, { '/home/.claude/skills/rel': '../rel' })
-  const result = failed(await run(deps, { type: 'move', key: 'skills:/home/.claude/skills/rel/SKILL.md', to: { project: SHOP }, copy: false }))
+  const result = failed(await run(deps, { type: 'move', key: itemKey('skills', '/home/.claude/skills/rel'), to: { project: SHOP }, copy: false }))
   assert.equal(result.reason, 'not-movable')
   assert.deepEqual(deps.fs.links, { '/home/.claude/skills/rel': '../rel' })
 })
@@ -241,9 +244,9 @@ test('moving a global MCP server into a project adds it there through the CLI, t
   const deps = setup()
   const config = deps.fs.files['/home/.claude.json']
   const result = ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'web'), to: { project: SHOP }, copy: false }))
-  assert.deepEqual(deps.cli.calls, [
-    'mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop',
-    'mcp remove web --scope user @ -'
+  assert.deepEqual(deps.exec.calls, [
+    'claude mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop',
+    'claude mcp remove web --scope user @ -'
   ])
   // Only the CLI wrote ~/.claude.json (the double writes it as Claude Code would); the app backed it up first.
   const written = JSON.parse(deps.fs.files['/home/.claude.json'])
@@ -259,7 +262,7 @@ test('copying an MCP server to a project team file only adds it, with the projec
   const result = ok(
     await run(deps, { type: 'move', key: mcpKeyOf(SHOP, 'local', 'db'), to: { project: BLOG, scope: 'project' }, copy: true })
   )
-  assert.deepEqual(deps.cli.calls, ['mcp add-json db {"type":"stdio","command":"db-server","args":["--port","1"]} --scope project @ /work/blog'])
+  assert.deepEqual(deps.exec.calls, ['claude mcp add-json db {"type":"stdio","command":"db-server","args":["--port","1"]} --scope project @ /work/blog'])
   assert.deepEqual(result.undo, { type: 'remove', key: mcpKeyOf(BLOG, 'project', 'db') })
 })
 
@@ -280,11 +283,11 @@ test('an MCP server with a secret-looking arg or url is not copied or moved into
     assert.match(result.message, /secret-looking/)
     assert.doesNotMatch(result.message, /SECRET1234567890|XXXXXXXX/)
   }
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
   assert.equal(deps.fs.files['/work/shop/.mcp.json'], json({ mcpServers: { docs: { command: 'docs-server' } } }))
   // Only me lives in ~/.claude.json, but add-json takes the whole config on its command line: refused too.
   assert.equal(failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'keyed'), to: { project: SHOP, scope: 'local' }, copy: true })).reason, 'secret')
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('a Claude Code move to only me refuses a literal secret header too: add-json puts the whole config on its command line', async () => {
@@ -302,10 +305,10 @@ test('a Claude Code move to only me refuses a literal secret header too: add-jso
   assert.equal(refusal.reason, 'secret')
   assert.match(refusal.message, /secret-looking values \(headers\.Authorization\)/)
   assert.doesNotMatch(refusal.message, /abc123secret/)
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
   ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'referenced'), to: { project: SHOP, scope: 'local' }, copy: true }))
-  assert.deepEqual(deps.cli.calls, [
-    'mcp add-json referenced {"type":"http","url":"https://api.example/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}} --scope local @ /work/shop'
+  assert.deepEqual(deps.exec.calls, [
+    'claude mcp add-json referenced {"type":"http","url":"https://api.example/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}} --scope local @ /work/shop'
   ])
 })
 
@@ -327,7 +330,7 @@ test('L-B: an MCP server with literal env or header values is not copied or move
     assert.match(result.message, /literal env or header values/)
     assert.doesNotMatch(result.message, /plain-value-1234|Bearer abc/)
   }
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
   assert.equal(deps.fs.files['/work/shop/.mcp.json'], json({ mcpServers: { docs: { command: 'docs-server' } } }))
   ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'referenced'), to: { project: SHOP, scope: 'project' }, copy: true }))
   // Only me is not shared, but add-json puts the value on its command line: a secret-looking one is refused.
@@ -338,7 +341,7 @@ test('L-B: an MCP server with literal env or header values is not copied or move
 
 test('an MCP move whose removal fails reports the partial result honestly', async () => {
   const deps = setup()
-  deps.cli = fakeCli(['mcp-remove:user'])
+  deps.exec = fakeClaude(deps.fs, ['mcp-remove:user'])
   const result = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'web'), to: { project: SHOP }, copy: false }))
   assert.equal(result.reason, 'partial')
   assert.match(result.message, /^claude mcp add-json for web worked; then claude mcp remove for web failed: cannot mcp-remove in user\. The backups made first can put the files back: %2Fhome%2F\.claude\.json\./)
@@ -346,7 +349,7 @@ test('an MCP move whose removal fails reports the partial result honestly', asyn
 
 test('a claude mcp command that exits 0 without changing the file is reported as did-not-change', async () => {
   const deps = setup()
-  deps.cli.silent = true
+  deps.exec.silent = true
   const mcp = deps.fs.files['/work/shop/.mcp.json']
   const removed = failed(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', 'docs') }))
   assert.equal(removed.reason, 'did-not-change')
@@ -354,7 +357,7 @@ test('a claude mcp command that exits 0 without changing the file is reported as
   assert.equal(deps.fs.files['/work/shop/.mcp.json'], mcp)
   const moved = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'web'), to: { project: SHOP }, copy: false }))
   assert.equal(moved.reason, 'did-not-change')
-  assert.deepEqual(deps.cli.calls, ['mcp remove docs --scope project @ /work/shop', 'mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop'])
+  assert.deepEqual(deps.exec.calls, ['claude mcp remove docs --scope project @ /work/shop', 'claude mcp add-json web {"type":"http","url":"https://web.example"} --scope local @ /work/shop'])
 })
 
 test('an MCP server name that looks like an option is refused before claude runs', async () => {
@@ -362,14 +365,14 @@ test('an MCP server name that looks like an option is refused before claude runs
   const result = failed(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', '-h') }))
   assert.equal(result.reason, 'refused')
   assert.match(result.message, /cannot start with "-"/)
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('an MCP move refuses a name already used at the destination, and runs nothing', async () => {
   const deps = setup({ '/work/shop/.mcp.json': json({ mcpServers: { docs: { command: 'docs-server' }, db: { command: 'team-db' } } }) })
   const result = failed(await run(deps, { type: 'move', key: mcpKeyOf(SHOP, 'local', 'db'), to: { project: SHOP, scope: 'project' }, copy: false }))
   assert.equal(result.reason, 'exists')
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
   const docs = failed(await run(deps, { type: 'move', key: mcpKeyOf(SHOP, 'project', 'docs'), to: { project: SHOP, scope: 'project' }, copy: false }))
   assert.equal(docs.reason, 'same-place')
 })
@@ -380,14 +383,14 @@ test('an MCP change refuses when the project .mcp.json changed since the view', 
   deps.fs.files['/work/shop/.mcp.json'] = json({ mcpServers: { docs: { command: 'other' } } })
   const result = failed(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', 'docs') }, versions))
   assert.equal(result.reason, 'changed')
-  assert.deepEqual(deps.cli.calls, [])
+  assert.deepEqual(deps.exec.calls, [])
 })
 
 test('removing an MCP server goes through the CLI after a backup', async () => {
   const deps = setup()
   const mcp = deps.fs.files['/work/shop/.mcp.json']
   const result = ok(await run(deps, { type: 'remove', key: mcpKeyOf(SHOP, 'project', 'docs') }))
-  assert.deepEqual(deps.cli.calls, ['mcp remove docs --scope project @ /work/shop'])
+  assert.deepEqual(deps.exec.calls, ['claude mcp remove docs --scope project @ /work/shop'])
   assert.equal(deps.fs.files[backupOf('/work/shop/.mcp.json')], mcp)
   assert.match(result.message, /^Removed MCP server "docs" from \/work\/shop \(team\)\./)
   assert.deepEqual(result.undo, { type: 'restore', name: backupOf('/work/shop/.mcp.json').slice(BACKUPS.length + 1) })
@@ -514,7 +517,7 @@ test('clearOverride and remove both clear a project override; a global plugin ca
 test('uninstall goes through the CLI', async () => {
   const deps = setup()
   const result = ok(await run(deps, { type: 'uninstall', key: userKey('a@m') }))
-  assert.deepEqual(deps.cli.calls, ['a@m user -'])
+  assert.deepEqual(deps.exec.calls, ['claude plugin uninstall a@m --scope user --keep-data --json @ -'])
   assert.match(result.message, /^Uninstalled plugin "a"\./)
   assert.equal(result.undo, undefined)
 })
@@ -548,7 +551,7 @@ test('a .mcp.json backup restores; a ~/.claude.json backup is refused because Cl
 
 test('an action on a key that is no longer there is refused as changed', async () => {
   const deps = setup()
-  const result = failed(await run(deps, { type: 'remove', key: 'skills:/nowhere/SKILL.md' }))
+  const result = failed(await run(deps, { type: 'remove', key: itemKey('skills', '/nowhere') }))
   assert.equal(result.reason, 'changed')
 })
 

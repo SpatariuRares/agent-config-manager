@@ -1,8 +1,7 @@
 // Where each item updates from, read from files only (no network): plugin installs, the `skills` CLI lock,
 // and pinned npm packages or Homebrew binaries in MCP server commands. Read-only.
-import { isObject, type Json } from './inventory.ts'
-import type { FileSystem, Http } from '../../core/ports.ts'
-import type { ClaudePaths } from './ports.ts'
+import { isObject, type ClaudePaths, type Json } from './inventory.ts'
+import type { FileSystem, Http } from '../toolkit.ts'
 import type { Entry } from './setup.ts'
 
 /** The same shape as the panel's UpdateSource. */

@@ -1,4 +1,4 @@
-// Reads the Codex setup into the panel's items, plus what the writes need (refs). Read-only.
+// Reads the Codex setup into the panel's items, indexed with what the writes need (refs). Read-only.
 // Every format here is cited in the comment block at the top of ./index.ts.
 import { parse } from 'smol-toml'
 import type { Item, Scope } from '../../adapters/view.ts'
@@ -7,6 +7,7 @@ import {
   describeMcp,
   existingProjects,
   isObject,
+  itemIndex,
   itemKey,
   listAllBackups,
   readEntryDir,
@@ -20,6 +21,7 @@ import {
   type EntryKind,
   type EntryRef,
   type FileSystem,
+  type ItemIndex,
   type Json,
   type McpConfig,
   type ProviderDeps,
@@ -95,7 +97,8 @@ export type Ref =
 
 export interface CodexRead {
   view: ProviderView
-  refs: Map<string, Ref>
+  /** The view's items, and the way back from a key to the item and its ref. */
+  index: ItemIndex<Ref>
   /** Projects listed in config.toml with trust_level = "trusted". */
   trusted: Set<string>
 }
@@ -137,11 +140,9 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
   const paths = codexPaths(home)
   const problems: string[] = []
   const versions: Record<string, string> = {}
-  const items: Item[] = []
-  const refs = new Map<string, Ref>()
+  const index = itemIndex<Ref>()
   const add = (item: Omit<Item, 'agent' | 'movable' | 'removable'> & Partial<Pick<Item, 'movable' | 'removable'>>, ref?: Ref) => {
-    items.push({ agent: CODEX, movable: false, removable: false, ...item })
-    if (ref) refs.set(item.key, ref)
+    index.add({ agent: CODEX, movable: false, removable: false, ...item }, ref)
   }
 
   const config = (await readToml(fs, paths.config, home, problems, versions)) ?? {}
@@ -304,8 +305,8 @@ export async function readCodex(deps: ProviderDeps): Promise<CodexRead> {
 
   const backups = (await listAllBackups(fs, codexBackups(paths))).map(({ name, target, at }) => ({ name, target, at }))
   const order = (item: Item) => `${item.project ?? ''}\u0000${item.kind}\u0000${item.name}`
-  items.sort((a, b) => order(a).localeCompare(order(b)))
-  return { view: { items, projects, versions, backups, problems }, refs, trusted }
+  const built = index.build((a, b) => order(a).localeCompare(order(b)))
+  return { view: { items: built.items, projects, versions, backups, problems }, index: built, trusted }
 }
 
 type Add = (item: Omit<Item, 'agent' | 'movable' | 'removable'> & Partial<Pick<Item, 'movable' | 'removable'>>, ref?: Ref) => void

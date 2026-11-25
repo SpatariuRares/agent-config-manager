@@ -5,17 +5,17 @@
 // command line and nothing else; a server with env, a url or headers is refused rather than copied without them.
 // A skill folder is copied into Codex's own folder (~/.codex/skills, <project>/.codex/skills), never the shared one.
 import type { ActionResult, Target } from '../../adapters/view.ts'
-import { admitMcp, exportSkill, itemKey, moveEntry, portableMcp, skillEntry, tilde, type Exported, type Portable, type ProviderDeps } from '../toolkit.ts'
+import { admitMcp, exportSkill, GONE, itemKey, moveEntry, portableMcp, skillEntry, tilde, type Exported, type Portable, type ProviderDeps } from '../toolkit.ts'
 import { addServer, places } from './actions.ts'
 import { addableServer, CODEX_ADD } from './mcp-add.ts'
 import { codexMcpConfig, codexPaths, readCodex, usableServerName } from './read.ts'
 
-const GONE = { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' } as const
 const refuse = (reason: string, message: string): ActionResult => ({ ok: false, reason, message })
 
 export async function exportCodex(deps: ProviderDeps, key: string): Promise<Exported> {
-  const ref = (await readCodex(deps)).refs.get(key)
-  if (ref === undefined) return GONE
+  const found = (await readCodex(deps)).index.lookup(key)
+  if (!found.ok) return found
+  const { ref } = found
   if (ref.kind !== 'mcp') return ref.kind === 'skills' ? exportSkill(deps.fs, ref.entry.name, ref.entry.entry) : GONE
   return portableMcp(codexMcpConfig(ref.name, ref.server))
 }

@@ -2,7 +2,7 @@
 import { homedir } from 'node:os'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { actionQueue, buildView, checkUpdates, runAction, type BackendDeps } from '../backend.ts'
-import { nodeCommandRunner } from '../claude-cli.ts'
+import { nodeCommandRunner } from '../node-exec.ts'
 import { nodeFileSystem } from '../node-fs.ts'
 import { fetchHttp } from '../updates.ts'
 import type { ActionRequest, AgentRequest } from '../view.ts'

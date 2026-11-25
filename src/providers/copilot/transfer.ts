@@ -9,6 +9,7 @@ import {
   guardedChange,
   exportSkill,
   isObject,
+  GONE,
   itemKey,
   mcpJson,
   moveEntry,
@@ -25,13 +26,14 @@ import { OWNER, ownPlace, type CopilotPaths } from './paths.ts'
 import { copilotMcpConfig, readCopilot } from './read.ts'
 import { changeDeps, COPILOT_PRIVATE_FILE, COPILOT_TEAM_FILE } from './write.ts'
 
-const GONE = { ok: false, reason: 'changed', message: 'That item is no longer there. The view was refreshed; try again.' } as const
 
 export async function exportCopilot(fs: FileSystem, paths: CopilotPaths, key: string): Promise<Exported> {
-  const source = (await readCopilot(fs, paths)).sources.get(key)
-  if (source === undefined) return GONE
-  if (source.kind === 'skills') return exportSkill(fs, source.name, source.dir)
-  return portableMcp(copilotMcpConfig(source.name, source.config))
+  const found = (await readCopilot(fs, paths)).index.lookup(key)
+  if (!found.ok) return found
+  const { ref } = found
+  if (ref.kind === 'skills') return exportSkill(fs, ref.entry.name, ref.entry.entry)
+  if (ref.kind !== 'mcp') return GONE
+  return portableMcp(copilotMcpConfig(ref.name, ref.config))
 }
 
 export async function importCopilot(deps: ProviderDeps, paths: CopilotPaths, item: Portable, to: Target, versions: Record<string, string>): Promise<ActionResult> {

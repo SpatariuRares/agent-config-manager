@@ -1,11 +1,10 @@
 // The Claude Code provider: the behavior this app always had, behind the AgentProvider interface.
 import type { ActionType, AgentInfo, Kind, ProjectScope } from '../../adapters/view.ts'
-import { KINDS, type AgentProvider, type ProviderDeps } from '../types.ts'
-import { CLAUDE, claudeAction, claudeView } from './actions.ts'
-import { claudeBackupPlan } from './backups.ts'
-import { claudeCliOver } from './cli.ts'
+import { KINDS, tilde, type AgentProvider, type BackupPlan, type ProviderDeps } from '../toolkit.ts'
+import { CLAUDE, claudeAction, claudeView, entryKey, NOTE } from './actions.ts'
+import { claudeBackups, claudePaths, isUserSettingsFile, knownProjects, projectSettingsFile, settingsFile } from './inventory.ts'
 import { CLAUDE_ADD_JSON, CLAUDE_ADD_JSON_TEAM } from './mcp.ts'
-import { claudePaths, type ClaudeDeps, type ClaudePaths, type PluginCli } from './ports.ts'
+import { entryDir, mcpFile } from './setup.ts'
 import { exportClaude, importClaude } from './transfer.ts'
 import { checkClaudeUpdates } from './updates.ts'
 
@@ -35,31 +34,45 @@ export const CLAUDE_PROJECT_SCOPES: Record<Kind, ProjectScope[]> = {
 export const CLAUDE_EXPORTS: Kind[] = ['skills', 'mcp']
 export const CLAUDE_IMPORTS: Kind[] = ['skills', 'mcp']
 
-export interface ClaudeOverrides {
-  /** Defaults to ~/.claude and ~/.claude.json under `deps.home`. */
-  paths?: ClaudePaths
-  /** Defaults to the `claude`, `npx` and `git` binaries through `deps.exec`; MCP writes always use `deps.exec`. */
-  cli?: PluginCli
+/**
+ * What restore and snapshot work with (the router runs both, ../backup-actions.ts). The store is the historical
+ * ~/.claude/backups/claude-config-manager; the files are every settings file this app writes, globally and in every
+ * known project (a project Claude Code no longer lists is not restorable); trashed skills and agents go back to their
+ * .claude folders. ~/.claude.json is backed up but never restored.
+ */
+async function claudeBackupPlan({ fs, home }: ProviderDeps): Promise<BackupPlan> {
+  const paths = claudePaths(home)
+  const projects = await knownProjects(fs, paths)
+  const files = [settingsFile(paths)]
+  for (const project of projects) {
+    for (const scope of ['project', 'local'] as const) {
+      const file = projectSettingsFile(project, scope)
+      if (!(await isUserSettingsFile(fs, paths, file))) files.push(file)
+    }
+    files.push(mcpFile(project))
+  }
+  return {
+    owner: 'Claude Code',
+    store: claudeBackups(paths),
+    files,
+    owned: [{ file: paths.userConfigFile, reason: 'claude-owned', why: 'Claude Code rewrites all the time, so this app never writes it; quit Claude Code first' }],
+    entryFolders: [null, ...projects].flatMap((project) => (['skills', 'agents'] as const).map((kind) => entryDir(paths, kind, project))),
+    say: (path) => tilde(home, path),
+    note: NOTE,
+    entryKey: (target) => entryKey(target.slice(0, target.lastIndexOf('/')).endsWith('/skills') ? 'skills' : 'agents', target)
+  }
 }
 
-/** The Claude Code provider. Overrides exist for tests that drive the CLI double directly. */
-export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
-  const claude = (deps: ProviderDeps): ClaudeDeps => ({
-    fs: deps.fs,
-    exec: deps.exec,
-    cli: overrides.cli ?? claudeCliOver(deps.exec),
-    paths: overrides.paths ?? claudePaths(deps.home),
-    clock: deps.clock,
-    http: deps.http
-  })
+/** The Claude Code provider. Its config is found under `deps.home`; every CLI runs through `deps.exec`. */
+export function claudeProvider(): AgentProvider {
   return {
     id: CLAUDE,
     mcpDestinations: [CLAUDE_ADD_JSON, CLAUDE_ADD_JSON_TEAM],
     async info(deps): Promise<AgentInfo> {
-      const { fs, paths } = claude(deps)
+      const paths = claudePaths(deps.home)
       const detected =
-        (await fs.realPath(paths.claudeDir)) !== null ||
-        (await fs.realPath(paths.userConfigFile)) !== null ||
+        (await deps.fs.realPath(paths.claudeDir)) !== null ||
+        (await deps.fs.realPath(paths.userConfigFile)) !== null ||
         (await deps.exec.find('claude')) !== null
       return {
         id: CLAUDE,
@@ -73,11 +86,11 @@ export function claudeProvider(overrides: ClaudeOverrides = {}): AgentProvider {
         configHome: '~/.claude'
       }
     },
-    buildView: (deps) => claudeView(claude(deps)),
-    runAction: (deps, request) => claudeAction(claude(deps), request),
-    backups: (deps) => claudeBackupPlan(claude(deps)),
-    checkUpdates: (deps) => checkClaudeUpdates({ ...claude(deps), http: deps.http }),
-    exportItem: (deps, key) => exportClaude(claude(deps), key),
-    importItem: (deps, item, to, versions) => importClaude(claude(deps), item, to, versions)
+    buildView: claudeView,
+    runAction: claudeAction,
+    backups: claudeBackupPlan,
+    checkUpdates: checkClaudeUpdates,
+    exportItem: exportClaude,
+    importItem: importClaude
   }
 }

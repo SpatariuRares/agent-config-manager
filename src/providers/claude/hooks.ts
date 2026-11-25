@@ -1,11 +1,9 @@
 // Moves, copies and removes single hook commands between settings files, keeping event and matcher.
 // Every write is a guarded change: version check of each file, backup, then the edit; a move is one change of two
 // steps (add, then remove), so a stale view writes nothing and a failed remove is `partial`.
-import { guardedChange, type ChangeResult } from '../../core/guarded-change.ts'
-import { hookEntries, isObject, type Json } from './inventory.ts'
-import type { FileSystem } from '../../core/ports.ts'
-import type { ClaudePaths } from './ports.ts'
-import { claudeBackups, writeRefusal, type Clock } from './toggle.ts'
+import { guardedChange, type ChangeResult, type Clock, type FileSystem } from '../toolkit.ts'
+import { claudeBackups, hookEntries, isObject, type ClaudePaths, type Json } from './inventory.ts'
+import { writeRefusal } from './setup.ts'
 
 export interface HookRef {
   /** null for the user settings file. */

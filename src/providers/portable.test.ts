@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Action, ActionResult } from '../adapters/view.ts'
+import { itemKey } from './item-index.ts'
 import { PROVIDERS } from './registry.ts'
 import { routeAction, routeView } from './router.ts'
 import { fakeExec, fakeFs } from './testing.ts'
@@ -36,7 +37,7 @@ const versionsOf = async (deps: ProviderDeps, agent: string) => {
 
 test('copyToAgent between real providers: a Claude Code skill to Codex, then its undo sent to Codex removes the copy', async () => {
   const { fs, deps } = machine()
-  const key = `skills:${HOME}/.claude/skills/review/SKILL.md`
+  const key = itemKey('skills', `${HOME}/.claude/skills/review`)
   const answer = await routeAction(deps, PROVIDERS, {
     agent: 'claude',
     action: { type: 'copyToAgent', key, toAgent: 'codex', to: { project: SHOP, scope: 'project' } },
@@ -60,7 +61,7 @@ test('copyToAgent between real providers: a Claude Code MCP server to Copilot CL
   const { fs, deps } = machine()
   const answer = await routeAction(deps, PROVIDERS, {
     agent: 'claude',
-    action: { type: 'copyToAgent', key: `mcp:${JSON.stringify([null, 'user', 'docs'])}`, toAgent: 'copilot', to: { project: null } },
+    action: { type: 'copyToAgent', key: itemKey('mcp', null, 'user', 'docs'), toAgent: 'copilot', to: { project: null } },
     versions: {}
   })
   assert.equal(answer.result.ok, true, answer.result.message)
@@ -72,7 +73,7 @@ test('copyToAgent between real providers: an agent that is not installed is refu
   const before = structuredClone(fs.files)
   const answer = await routeAction(deps, PROVIDERS, {
     agent: 'claude',
-    action: { type: 'copyToAgent', key: `skills:${HOME}/.claude/skills/review/SKILL.md`, toAgent: 'gemini', to: { project: null } },
+    action: { type: 'copyToAgent', key: itemKey('skills', `${HOME}/.claude/skills/review`), toAgent: 'gemini', to: { project: null } },
     versions: {}
   })
   assert.equal(answer.result.ok === false && answer.result.reason, 'not-detected')
@@ -114,7 +115,7 @@ test('copyToAgent undo: sent with undoVersions, it is refused as changed when th
   const file = `${HOME}/.copilot/mcp-config.json`
   const answer = await routeAction(deps, PROVIDERS, {
     agent: 'claude',
-    action: { type: 'copyToAgent', key: `mcp:${JSON.stringify([null, 'user', 'docs'])}`, toAgent: 'copilot', to: { project: null } },
+    action: { type: 'copyToAgent', key: itemKey('mcp', null, 'user', 'docs'), toAgent: 'copilot', to: { project: null } },
     versions: {}
   })
   const result = answer.result as ActionResult & { ok: true }
@@ -136,7 +137,7 @@ test('copyToAgent still refuses a server the target already has, whatever versio
   const before = fs.files[`${HOME}/.copilot/mcp-config.json`]
   const answer = await routeAction(deps, PROVIDERS, {
     agent: 'claude',
-    action: { type: 'copyToAgent', key: `mcp:${JSON.stringify([null, 'user', 'docs'])}`, toAgent: 'copilot', to: { project: null } },
+    action: { type: 'copyToAgent', key: itemKey('mcp', null, 'user', 'docs'), toAgent: 'copilot', to: { project: null } },
     versions: { [`${HOME}/.copilot/mcp-config.json`]: 'stale' }
   })
   assert.equal(answer.result.ok, false)

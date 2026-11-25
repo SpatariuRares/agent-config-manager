@@ -39,6 +39,7 @@ src/providers/       One folder per agent (claude, codex, gemini, copilot) behin
                      router.ts refuses anything an agent did not declare
 src/adapters/
   view.ts            The panel contract: view.get, action.run, updates.check
+  node-exec.ts       Runs agent CLIs by argv, never a shell, for every provider
   http/              localhost server: serves panel/ and answers the contract as JSON
   orca/              Orca plugin worker answering the same contract
 src/cli/             The agent-config command

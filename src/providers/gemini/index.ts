@@ -66,10 +66,10 @@ export const GEMINI_EXPORTS: Kind[] = ['skills', 'mcp']
 export const GEMINI_IMPORTS: Kind[] = ['skills', 'mcp']
 
 /** An MCP item carries its switch: off when `gemini mcp disable` turned it off (mcp-server-enablement.json). */
-function withSwitches({ view, refs }: Setup) {
+function withSwitches({ view, index }: Setup) {
   const items = view.items.map((item): Item => {
-    const ref = refs.get(item.key)
-    return ref?.kind === 'mcp' ? { ...item, enabled: ref.enabled } : item
+    const found = index.lookup(item.key)
+    return found.ok && found.ref.kind === 'mcp' ? { ...item, enabled: found.ref.enabled } : item
   })
   return { ...view, items }
 }

@@ -11,6 +11,7 @@
 import type { ActionResult, Target } from '../../adapters/view.ts'
 import {
   exportSkill,
+  GONE,
   itemKey,
   moveEntry,
   optionLikeRefusal,
@@ -28,13 +29,12 @@ import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
 import { settingsOf, type GeminiPaths } from './paths.ts'
 import { geminiMcpConfig, readSetup } from './read.ts'
 
-const GONE = refuse('changed', 'That item is no longer there. The view was refreshed; try again.')
 
 export async function exportGemini(deps: ProviderDeps, paths: GeminiPaths, key: string): Promise<Exported> {
   const setup = await readSetup(deps.fs, paths)
-  const ref = setup.refs.get(key)
-  const item = setup.view.items.find((candidate) => candidate.key === key)
-  if (ref === undefined || item === undefined) return GONE
+  const found = setup.index.lookup(key)
+  if (!found.ok) return found
+  const { item, ref } = found
   if (ref.kind === 'skills') return exportSkill(deps.fs, item.name, item.source)
   if (ref.kind !== 'mcp') return GONE
   return portableMcp(geminiMcpConfig(ref.server.name, ref.server.config))

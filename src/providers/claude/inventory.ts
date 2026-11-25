@@ -1,12 +1,42 @@
 // Reads the Claude Code setup into one read-only model. Never writes.
-import { isObject, readJson, versionOf, type Json } from '../../core/json.ts'
-import { describe, readAgents, readSkills, sortByName, type Agent, type Skill } from '../../core/markdown.ts'
-import { existingProjects } from '../../core/paths.ts'
-import type { FileSystem } from '../../core/ports.ts'
-import { describeMcp, type McpConfig } from '../mcp-policy.ts'
-import type { ClaudePaths } from './ports.ts'
+import {
+  describe,
+  describeMcp,
+  existingProjects,
+  isObject,
+  readAgents,
+  readJson,
+  readSkills,
+  sortByName,
+  versionOf,
+  type Agent,
+  type BackupStore,
+  type FileSystem,
+  type Json,
+  type McpConfig,
+  type Skill
+} from '../toolkit.ts'
 
 export { isObject, readAgents, readSkills, versionOf, type Agent, type Json, type Skill }
+
+/** Where Claude Code keeps its setup under the home folder. */
+export interface ClaudePaths {
+  /** Usually ~/.claude */
+  claudeDir: string
+  /** Usually ~/.claude.json */
+  userConfigFile: string
+}
+
+export const claudePaths = (home: string): ClaudePaths => ({ claudeDir: `${home}/.claude`, userConfigFile: `${home}/.claude.json` })
+
+/**
+ * Claude Code's backups stay where this app always kept them, ~/.claude/backups/claude-config-manager, so every
+ * backup made before the multi-agent change is still listed and restorable. `settings` names the user settings file.
+ */
+export const claudeBackups = (paths: ClaudePaths): BackupStore => ({
+  dir: `${paths.claudeDir}/backups/claude-config-manager`,
+  aliases: { settings: settingsFile(paths) }
+})
 
 export interface PluginContributions {
   skills: string[]
@@ -60,16 +90,11 @@ export interface Hook {
   command: string
 }
 
+/** Plugins and projects; setup.ts reads every other class, per place. */
 export interface Inventory {
   plugins: Plugin[]
-  skills: Skill[]
-  agents: Agent[]
-  mcpServers: McpServer[]
-  hooks: Hook[]
   /** Files that exist but could not be read; the rest of the inventory still loads. */
   problems: string[]
-  /** Identifies the settings.json content this inventory was read from; '' when the file is missing. */
-  settingsVersion: string
   /** Projects Claude Code has been used in that still exist, sorted. */
   projects: string[]
   /** versionOf() of every settings file read, by absolute path. */
@@ -99,12 +124,7 @@ export async function readInventory(fs: FileSystem, paths: ClaudePaths): Promise
 
   return {
     plugins: await readPlugins(fs, settings, installed, overrides, problems),
-    skills: await readSkills(fs, `${paths.claudeDir}/skills`),
-    agents: await readAgents(fs, `${paths.claudeDir}/agents`),
-    mcpServers: readMcpServers(userConfig),
-    hooks: readHooks(settings),
     problems,
-    settingsVersion: versionOf(settingsText),
     projects,
     versions
   }
@@ -239,10 +259,6 @@ function unique(values: string[]): string[] {
   return [...new Set(values)].sort()
 }
 
-function readMcpServers(userConfig: Json): McpServer[] {
-  return mcpServersOf(userConfig.mcpServers).map(({ name, transport, target }) => ({ name, transport, target }))
-}
-
 /** A Claude Code server config as McpConfig: without a `type`, a url means http and a command stdio. */
 export function claudeMcpConfig(name: string, config: Json): McpConfig {
   const { type, command, args, env, url, headers, ...rest } = isObject(config) ? config : {}
@@ -257,12 +273,6 @@ export function mcpServersOf(map: unknown): (McpServer & { config: Json })[] {
       .filter((entry): entry is [string, Json] => isObject(entry[1]))
       .map(([name, server]) => ({ name, ...describeMcp(claudeMcpConfig(name, server)), config: server }))
   )
-}
-
-function readHooks(settings: Json): Hook[] {
-  return hookEntries(settings)
-    .map(({ event, matcher, command }) => ({ event, matcher, command }))
-    .sort((a, b) => a.event.localeCompare(b.event))
 }
 
 /** One hook command in a settings file, with what it takes to find it again. */
