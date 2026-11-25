@@ -69,3 +69,7 @@ orca plugin validate .            # manifest check
 orca plugin check .               # renders the panel with your real setup
 orca plugin dev load .            # load into Orca (asks for approval: it runs a Node worker)
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
