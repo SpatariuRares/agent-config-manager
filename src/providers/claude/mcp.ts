@@ -2,6 +2,7 @@
 // Claude Code all the time, so it is read here but never written. Files the CLI changes are backed up first.
 import { isObject, knownProjects, versionOf, type Json } from './inventory.ts'
 import type { FileSystem } from '../../core/ports.ts'
+import { argsHaveSecret, urlHasSecret } from '../../core/redact.ts'
 import type { ClaudePaths, PluginCli } from './ports.ts'
 import { mcpFile, type Place } from './setup.ts'
 import { backUp, type Clock } from './toggle.ts'
@@ -15,7 +16,7 @@ export type McpResult =
   | { ok: true; backups: string[] }
   | {
       ok: false
-      reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'cli-failed' | 'partial'
+      reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret' | 'cli-failed' | 'partial'
       message: string
       backups: string[]
     }
@@ -35,7 +36,7 @@ export async function moveMcp(
   copy: boolean,
   clock: Clock
 ): Promise<McpResult> {
-  const refuse = (reason: 'changed' | 'exists' | 'same-place' | 'unknown-project', message: string): McpResult => ({
+  const refuse = (reason: 'changed' | 'exists' | 'same-place' | 'unknown-project' | 'secret', message: string): McpResult => ({
     ok: false,
     reason,
     message,
@@ -44,6 +45,12 @@ export async function moveMcp(
   if (to.project === ref.project && cliScope(to) === cliScope(ref)) return refuse('same-place', `"${ref.name}" is already there.`)
   if (to.project !== null && !(await knownProjects(fs, paths)).includes(to.project)) {
     return refuse('unknown-project', `${to.project} is not a project Claude Code knows.`)
+  }
+  if (to.project !== null && to.scope === 'project' && commandLineSecret(ref.config)) {
+    return refuse(
+      'secret',
+      `"${ref.name}" has a secret-looking value in its args or url. A project .mcp.json is shared with the team: move the secret into an env value with a \${VAR} reference first, or choose only me.`
+    )
   }
   const stale = await staleFile(fs, paths, [ref, to], versions)
   if (stale !== null) return refuse('changed', `${stale} changed since it was read. Refresh and try again.`)
@@ -74,6 +81,13 @@ export async function removeMcp(
   const removed = await cli.mcpRemove(ref.name, cliScope(ref), ref.project)
   if (!removed.ok) return { ok: false, reason: 'cli-failed', message: removed.output, backups }
   return { ok: true, backups }
+}
+
+/** True when the command, args or url hold a value that looks like a credential (the shared redaction rules). */
+function commandLineSecret(config: Json): boolean {
+  if (!isObject(config)) return false
+  const words = [config.command, ...(Array.isArray(config.args) ? config.args : [])].filter((word): word is string => typeof word === 'string')
+  return argsHaveSecret(words) || (typeof config.url === 'string' && urlHasSecret(config.url))
 }
 
 /** The first .mcp.json that changed since the view; ~/.claude.json is not checked (Claude Code rewrites it). */

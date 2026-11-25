@@ -39,9 +39,10 @@ export function nodeCommandRunner(find: (name: string) => Promise<string | null>
       if (command === null) return { ok: false, output: `The ${name} command was not found.` }
       const env = { ...process.env, PATH: [dirname(command), process.env.PATH].filter(Boolean).join(delimiter) }
       return new Promise((resolve) => {
-        execFile(command, [...argv], { cwd: cwd ?? homedir(), timeout: options.timeoutMs ?? 120_000, env }, (error, stdout, stderr) => {
+        const child = execFile(command, [...argv], { cwd: cwd ?? homedir(), timeout: options.timeoutMs ?? 120_000, env }, (error, stdout, stderr) => {
           resolve({ ok: error === null, output: `${stdout}${stderr}`.trim() || String(error ?? '') })
         })
+        if (options.closeStdin) child.stdin?.end()
       })
     }
   }

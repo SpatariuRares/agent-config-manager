@@ -260,6 +260,29 @@ test('copying an MCP server to a project team file only adds it, with the projec
   assert.deepEqual(result.undo, { type: 'remove', key: mcpKeyOf(BLOG, 'project', 'db') })
 })
 
+test('an MCP server with a secret-looking arg or url is not copied or moved into a project team file, which the team shares', async () => {
+  const deps = setup({
+    '/home/.claude.json': JSON.stringify({
+      ...userConfig,
+      mcpServers: {
+        ...userConfig.mcpServers,
+        keyed: { command: 'npx', args: ['srv', '--api-key', 'sk-live-SECRET1234567890'] },
+        hook: { type: 'http', url: 'https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX' }
+      }
+    })
+  })
+  for (const [name, copy] of [['keyed', true], ['hook', false]] as const) {
+    const result = failed(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', name), to: { project: SHOP, scope: 'project' }, copy }))
+    assert.equal(result.reason, 'secret', name)
+    assert.match(result.message, /secret-looking/)
+    assert.doesNotMatch(result.message, /SECRET1234567890|XXXXXXXX/)
+  }
+  assert.deepEqual(deps.cli.calls, [])
+  assert.equal(deps.fs.files['/work/shop/.mcp.json'], json({ mcpServers: { docs: { command: 'docs-server' } } }))
+  // Only-me lives in ~/.claude.json, which is not shared: that copy still goes through.
+  ok(await run(deps, { type: 'move', key: mcpKeyOf(null, 'user', 'keyed'), to: { project: SHOP, scope: 'local' }, copy: true }))
+})
+
 test('an MCP move whose removal fails reports the partial result honestly', async () => {
   const deps = setup()
   deps.cli = fakeCli(['mcp-remove:user'])

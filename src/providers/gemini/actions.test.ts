@@ -117,6 +117,28 @@ test('updating an extension runs `gemini extensions update <name>`; a local one 
   assert.deepEqual(m.exec.calls.length, 1)
 })
 
+test('an extension update that asks to approve new permissions fails at once with the command to run, and never accepts them', async () => {
+  const prompt = 'The extension wants new permissions.\nDo you want to continue? [Y/n]: '
+  for (const ok of [true, false]) {
+    // stdin is closed, so the real CLI exits at its consent prompt (with or without an error code).
+    const m = withCli(() => ({ ok, output: prompt }))
+    const options: unknown[] = []
+    const run = m.deps.exec.run.bind(m.deps.exec)
+    m.deps.exec.run = (command, argv, cwd, opts) => {
+      options.push(opts)
+      return run(command, argv, cwd, opts)
+    }
+    const view = await viewOf(m.deps)
+    const answer = await act(m.deps, { type: 'update', key: itemOf(view, 'plugins', 'obsidian').key }, view.versions)
+    assert.equal(refused(answer.result).reason, 'needs-consent', answer.result.message)
+    assert.match(answer.result.message, /new permissions/)
+    assert.match(answer.result.message, /in a terminal: gemini extensions update obsidian$/)
+    assert.deepEqual(m.exec.calls, ['gemini extensions update obsidian @ -'])
+    assert.deepEqual(options, [{ timeoutMs: 120_000, closeStdin: true }])
+    assert.equal(refused(answer.result).confirm, undefined)
+  }
+})
+
 test('removing an MCP server runs `gemini mcp remove --scope user|project` in the right folder, after a backup', async () => {
   let backedUp = 0
   const m = withCli((m, argv, cwd) => {

@@ -68,3 +68,27 @@ test('redactCommand: Bearer, Authorization headers, KEY=value, secret flags and 
   assert.equal(redactCommand('send Bearer abc.def'), `send Bearer ${R}`)
   assert.equal(redactCommand('npm run lint && echo done'), 'npm run lint && echo done')
 })
+
+const SLACK = 'https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX'
+const DISCORD = 'https://discord.com/api/webhooks/123456789012345678/abcDEF1234ghiJKL5678mnoPQR9012stuVWX3456yzAB-cd_EF'
+
+test('redactUrl: a token in the path (a webhook URL) is hidden; ordinary path words stay readable', () => {
+  assert.equal(redactUrl(SLACK), `https://hooks.slack.com/services/T000/B000/${R}`)
+  assert.equal(redactUrl(DISCORD), `https://discord.com/api/webhooks/123456789012345678/${R}`)
+  assert.equal(redactUrl(`${SLACK}?x=1`), `https://hooks.slack.com/services/T000/B000/${R}?x=${R}`)
+  for (const url of ['https://x.io/mcp', 'https://x.io/v1/sse', 'https://x.io/api/mcp', 'https://x.io/.well-known/oauth-authorization-server']) {
+    assert.equal(redactUrl(url), url)
+  }
+})
+
+test('urlHasSecret: a token in the path counts; ordinary path words do not', () => {
+  assert.equal(urlHasSecret(SLACK), true)
+  assert.equal(urlHasSecret(DISCORD), true)
+  for (const url of ['https://x.io/mcp', 'https://x.io/v1/sse', 'https://x.io/api/mcp', 'https://mcp.context7.com/mcp']) assert.equal(urlHasSecret(url), false, url)
+})
+
+test('a webhook URL in args or in a hook command is redacted, and counts as a secret', () => {
+  assert.deepEqual(redactArgs(['--url', SLACK]), ['--url', `https://hooks.slack.com/services/T000/B000/${R}`])
+  assert.equal(argsHaveSecret(['notify', DISCORD]), true)
+  assert.equal(redactCommand(`curl -X POST ${SLACK}`), `curl -X POST https://hooks.slack.com/services/T000/B000/${R}`)
+})

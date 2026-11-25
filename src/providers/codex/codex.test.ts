@@ -306,6 +306,64 @@ test('MCP remove runs `codex mcp remove NAME` by argv, after backing up config.t
   assert.ok(answer.view.ok && !answer.view.view.items.some((item) => item.name === 'codegraph'))
 })
 
+test('MCP remove returns an undo that adds the same server back with `codex mcp add`, from the backed-up config.toml', async () => {
+  const entry = '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve", "--mcp"]\n'
+  const m = machine({
+    reply: (_command, argv) => {
+      if (argv[1] === 'remove') m.fs.files[CONFIG] = m.fs.files[CONFIG].replace(entry, '')
+      else m.fs.files[CONFIG] += `\n${entry}`
+      return { ok: true, output: '' }
+    }
+  })
+  const view = await viewOf(m.deps)
+  const removed = await act(m.deps, view, { type: 'remove', key: named(view, 'mcp', 'codegraph').key })
+  assert.equal(removed.result.ok, true, removed.result.message)
+  const backup = `${BACKUPS}/config.2026-11-24T10-00-00-000Z.json`
+  const undo = (removed.result as ActionResult & { ok: true }).undo
+  assert.deepEqual(undo, { type: 'move', key: itemKey('mcp', backup, 'codegraph'), to: { project: null }, copy: true })
+  assert.ok(removed.view.ok)
+
+  const again = await act(m.deps, removed.view.view, undo!)
+  assert.equal(again.result.ok, true, again.result.message)
+  assert.deepEqual(m.exec.calls, ['codex mcp remove codegraph @ -', 'codex mcp add codegraph -- codegraph serve --mcp @ -'])
+  assert.match(again.result.message, /Added MCP server "codegraph" back to ~\/\.codex\/config\.toml with codex mcp add/)
+  assert.deepEqual((again.result as ActionResult & { ok: true }).undo, { type: 'remove', key: itemKey('mcp', CONFIG, 'codegraph') })
+  assert.ok(again.view.ok && again.view.view.items.some((item) => item.name === 'codegraph' && item.project === null))
+})
+
+test('MCP remove keeps no undo, and says why, when `codex mcp add` cannot recreate the server', async () => {
+  const blocks: Record<string, string> = {
+    context7: '[mcp_servers.context7]\nurl = "https://mcp.context7.com/mcp"\n\n[mcp_servers.context7.http_headers]\nAuthorization = "Bearer secret-value"\n\n',
+    off: '[mcp_servers.off]\ncommand = "npx"\nargs = ["-y", "off-mcp"]\nenabled = false\n\n'
+  }
+  const m = machine({
+    reply: (_command, argv) => {
+      m.fs.files[CONFIG] = m.fs.files[CONFIG].replace(blocks[argv[2]], '')
+      return { ok: true, output: '' }
+    }
+  })
+  let view = await viewOf(m.deps)
+  for (const [name, why] of [['context7', /only stdio servers/], ['off', /enabled/]] as const) {
+    const answer = await act(m.deps, view, { type: 'remove', key: named(view, 'mcp', name).key })
+    assert.equal(answer.result.ok, true, answer.result.message)
+    assert.equal((answer.result as ActionResult & { ok: true }).undo, undefined, name)
+    assert.match(answer.result.message, /No undo:/, name)
+    assert.match(answer.result.message, why, name)
+    assert.ok(answer.view.ok)
+    view = answer.view.view
+  }
+})
+
+test('an undo key that names something other than a Codex config.toml backup runs nothing', async () => {
+  const m = machine()
+  const view = await viewOf(m.deps)
+  for (const file of [`${BACKUPS}/config.2026-11-24T10-00-00-000Z.json`, '/home/elsewhere/config.toml', `${BACKUPS}/../config.toml`]) {
+    const answer = await act(m.deps, view, { type: 'move', key: itemKey('mcp', file, 'codegraph'), to: { project: null }, copy: true })
+    assert.equal(answer.result.ok, false, file)
+  }
+  assert.deepEqual(m.exec.calls, [])
+})
+
 test('MCP copy from a project to global runs `codex mcp add NAME -- COMMAND ARGS` after the backup', async () => {
   let backedUp = false
   const m = machine({

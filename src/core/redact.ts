@@ -29,36 +29,70 @@ export function looksSecret(value: string): boolean {
   return /[0-9]/.test(value) && /[A-Za-z]/.test(value) && entropy(value) >= 3.5
 }
 
-/** Whether a URL carries a credential: user info, a secret-named query key, or a token-shaped query value. */
+/**
+ * A URL path segment that is a token: a credential-like value (looksSecret, also on each `:`-separated part), or a
+ * run of 20+ letters and digits that is not one lowercase word (`XXXXXXXXXXXXXXXXXXXXXXXX` in a Slack webhook).
+ * Ordinary path words (`mcp`, `v1`, `sse`, `oauth-authorization-server`) stay readable.
+ */
+function secretSegment(segment: string): boolean {
+  let text = segment
+  try {
+    text = decodeURIComponent(segment)
+  } catch {
+    // Not valid percent-encoding: check it as written.
+  }
+  if (text === '') return false
+  if (looksSecret(text) || text.split(':').some((part) => part !== text && looksSecret(part))) return true
+  return (text.match(/[A-Za-z0-9]{20,}/g) ?? []).some((run) => !/^[a-z]+$/.test(run))
+}
+
+/** A path with every token-like segment replaced by REDACTED. */
+const redactPath = (path: string) => path.split('/').map((segment) => (secretSegment(segment) ? REDACTED : segment)).join('/')
+const pathHasSecret = (path: string) => path.split('/').some(secretSegment)
+
+/** Whether a URL carries a credential: user info, a token-like path segment, a secret-named query key, or a token-shaped query value. */
 export function urlHasSecret(url: string): boolean {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    return /\/\/[^/@\s]+@/.test(url) || [...url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)].some(([, k, v]) => SECRET_NAME.test(k) || looksSecret(v))
+    return (
+      /\/\/[^/@\s]+@/.test(url) ||
+      pathHasSecret(url.split(/[?#]/)[0]) ||
+      [...url.matchAll(/[?&]([^=&#]*)=([^&#]*)/g)].some(([, k, v]) => SECRET_NAME.test(k) || looksSecret(v))
+    )
   }
   if (parsed.username || parsed.password) return true
+  if (pathHasSecret(parsed.pathname)) return true
   if ([...parsed.searchParams].some(([key, value]) => SECRET_NAME.test(key) || looksSecret(value))) return true
   return SECRET_NAME.test(parsed.hash)
 }
 
-/** A URL without its user info and fragment, and with every query value redacted. Unchanged when it has none. */
+/**
+ * A URL without its user info and fragment, with every token-like path segment and every query value redacted.
+ * Unchanged when it has none of them.
+ */
 export function redactUrl(url: string): string {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
     const cut = url.split(/[?#]/)[0]
-    return cut === url ? cut : `${cut}?${REDACTED}`
+    const path = redactPath(cut)
+    return cut === url ? path : `${path}?${REDACTED}`
   }
-  if (!parsed.username && !parsed.password && !parsed.search && !parsed.hash) return url
+  const secretPath = pathHasSecret(parsed.pathname)
+  if (!parsed.username && !parsed.password && !parsed.search && !parsed.hash && !secretPath) return url
   parsed.username = ''
   parsed.password = ''
   parsed.hash = ''
   const keys = [...new Set(parsed.searchParams.keys())]
   const query = keys.map((key) => `${encodeURIComponent(key)}=${REDACTED}`).join('&')
   parsed.search = ''
-  return `${parsed.toString()}${query ? `?${query}` : ''}`
+  // Without search and hash, the path ends the URL; REDACTED is put in as text (the URL API would encode it).
+  const whole = parsed.toString()
+  const path = secretPath ? redactPath(parsed.pathname) : parsed.pathname
+  return `${whole.slice(0, whole.length - parsed.pathname.length)}${path}${query ? `?${query}` : ''}`
 }
 
 /** One word after `previous`: what may be shown, and whether it hid a credential. */

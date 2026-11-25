@@ -10,6 +10,7 @@ import {
   isObject,
   isTrashName,
   itemKey,
+  listBackups,
   moveEntry,
   optionLikeRefusal,
   restoreTrash,
@@ -21,6 +22,7 @@ import {
 } from '../toolkit.ts'
 import { parse } from 'smol-toml'
 import { agentDir, codexBackups, codexPaths, destinationDir, copyableServer, readCodex, skillDirs, usableServerName, type CodexRead, type Ref } from './read.ts'
+import type { Json } from '../toolkit.ts'
 
 /** `codex mcp add/remove` can take a while on first run; never wait forever. */
 const CLI_TIMEOUT_MS = 60_000
@@ -37,7 +39,7 @@ export async function codexAction(deps: ProviderDeps, request: ActionRequest): P
   switch (action.type) {
     case 'move': {
       const ref = refOf(action.key)
-      if (ref === undefined) return GONE
+      if (ref === undefined) return addBackFromBackup(deps, action, versions)
       return ref.kind === 'mcp' ? copyServer(deps, read, ref, action, versions) : moveFile(deps, read, ref, action, versions)
     }
     case 'remove': {
@@ -126,7 +128,73 @@ async function removeServer(deps: ProviderDeps, ref: Ref & { kind: 'mcp' }, vers
   if (!('backup' in ran)) return ran
   if (await serverPresent(deps, ref.name)) return refuse('cli-failed', `codex mcp remove ran, but "${ref.name}" is still in ~/.codex/config.toml.`)
   const saved = ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.`
-  return { ok: true, message: `Removed MCP server "${ref.name}" with codex mcp remove.${saved}` }
+  const message = `Removed MCP server "${ref.name}" with codex mcp remove.${saved}`
+  // The undo adds the same server back from the backup, when `codex mcp add` can say everything it had.
+  const why = ran.backup === null ? 'there was no config.toml to back up' : addableServer(ref.name, ref.server)
+  if (why !== null) return { ok: true, message: `${message} No undo: ${why}.` }
+  return { ok: true, message, undo: { type: 'move', key: itemKey('mcp', ran.backup!, ref.name), to: { project: null }, copy: true } }
+}
+
+/** Why `codex mcp add NAME -- COMMAND ARGS` cannot recreate this server exactly, or null when it can. */
+function addableServer(name: string, server: Json): string | null {
+  const why = copyableServer(server)
+  if (why !== null) return `\`codex mcp add\` cannot recreate it: ${why}`
+  for (const [value, what] of [
+    [name, 'An MCP server name'],
+    [String(server.command), 'An MCP server command']
+  ] as const) {
+    const refused = optionLikeRefusal(value, what)
+    if (refused !== null) return refused.output
+  }
+  return null
+}
+
+/** `codex mcp add` for one server; refuses a name already in config.toml, and checks the CLI really added it. */
+async function addServer(deps: ProviderDeps, name: string, server: Json, versions: Record<string, string>): Promise<{ ok: true; saved: string } | ActionResult> {
+  if (await serverPresent(deps, name)) return refuse('exists', `~/.codex/config.toml already has a server named "${name}".`)
+  const args = Array.isArray(server.args) ? server.args.map(String) : []
+  // Everything after `--` is the server's command line; codex never reads it as options.
+  const ran = await runMcpCli(deps, ['mcp', 'add', name, '--', String(server.command), ...args], versions)
+  if (!('backup' in ran)) return ran
+  if (!(await serverPresent(deps, name))) return refuse('cli-failed', `codex mcp add ran, but "${name}" is not in ~/.codex/config.toml.`)
+  return { ok: true, saved: ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.` }
+}
+
+/**
+ * The undo of a remove: `move` (a copy to global) of a key that names a server in a backup of ~/.codex/config.toml.
+ * Anything else is an item that is no longer there.
+ */
+async function addBackFromBackup(deps: ProviderDeps, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
+  const paths = codexPaths(deps.home)
+  const store = codexBackups(paths)
+  let parts: unknown
+  try {
+    parts = JSON.parse(action.key.slice('mcp:'.length))
+  } catch {
+    return GONE
+  }
+  if (!action.key.startsWith('mcp:') || !Array.isArray(parts) || parts.length !== 2 || !parts.every((part) => typeof part === 'string')) return GONE
+  const [file, name] = parts as [string, string]
+  const backup = baseName(file)
+  if (file !== `${store.dir}/${backup}` || backupTarget(store, backup) !== paths.config || !(await listBackups(deps.fs, store)).includes(backup)) return GONE
+  if (action.to?.project !== null || action.copy !== true) return refuse('not-movable', 'A server in a backup can only be added back to ~/.codex/config.toml.')
+  let server: unknown
+  try {
+    server = (parse((await deps.fs.readText(file)) ?? '') as Record<string, unknown>).mcp_servers
+    server = isObject(server) && Object.hasOwn(server, name) ? server[name] : undefined
+  } catch {
+    server = undefined
+  }
+  if (!isObject(server)) return refuse('unknown-backup', `${backup} has no MCP server named "${name}".`)
+  const why = usableServerName(name) ? addableServer(name, server) : `\`codex mcp add\` refuses the name "${name}"`
+  if (why !== null) return refuse('not-movable', `"${name}" cannot be added back: ${why}.`)
+  const added = await addServer(deps, name, server, versions)
+  if (!('saved' in added)) return added
+  return {
+    ok: true,
+    message: `Added MCP server "${name}" back to ~/.codex/config.toml with codex mcp add.${added.saved}`,
+    undo: { type: 'remove', key: itemKey('mcp', paths.config, name) }
+  }
 }
 
 async function copyServer(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind: 'mcp' }, action: Action & { type: 'move' }, versions: Record<string, string>): Promise<ActionResult> {
@@ -136,24 +204,13 @@ async function copyServer(deps: ProviderDeps, read: CodexRead, ref: Ref & { kind
   if (!item?.movable) return refuse('not-movable', item?.notMovableReason ?? `"${ref.name}" cannot be copied.`)
   const why = copyableServer(ref.server)
   if (why !== null) return refuse('not-movable', `"${ref.name}" cannot be copied: ${why}.`)
-  const command = String(ref.server.command)
-  const args = Array.isArray(ref.server.args) ? ref.server.args.map(String) : []
-  for (const [value, what] of [
-    [ref.name, 'An MCP server name'],
-    [command, 'An MCP server command']
-  ] as const) {
-    const refused = optionLikeRefusal(value, what)
-    if (refused !== null) return refuse('not-movable', refused.output)
-  }
-  if (await serverPresent(deps, ref.name)) return refuse('exists', `~/.codex/config.toml already has a server named "${ref.name}".`)
-  // Everything after `--` is the server's command line; codex never reads it as options.
-  const ran = await runMcpCli(deps, ['mcp', 'add', ref.name, '--', command, ...args], versions)
-  if (!('backup' in ran)) return ran
-  if (!(await serverPresent(deps, ref.name))) return refuse('cli-failed', `codex mcp add ran, but "${ref.name}" is not in ~/.codex/config.toml.`)
-  const saved = ran.backup === null ? '' : ` Backup: ${baseName(ran.backup)}.`
+  const optionLike = addableServer(ref.name, ref.server)
+  if (optionLike !== null) return refuse('not-movable', optionLike)
+  const added = await addServer(deps, ref.name, ref.server, versions)
+  if (!('saved' in added)) return added
   return {
     ok: true,
-    message: `Copied MCP server "${ref.name}" to ~/.codex/config.toml with codex mcp add.${saved}`,
+    message: `Copied MCP server "${ref.name}" to ~/.codex/config.toml with codex mcp add.${added.saved}`,
     undo: { type: 'remove', key: itemKey('mcp', codexPaths(deps.home).config, ref.name) }
   }
 }

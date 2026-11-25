@@ -74,11 +74,20 @@ async function guard(ctx: Context, files: string[]): Promise<{ ok: true; backups
 }
 
 /** Runs `gemini <argv>` (never a shell) in `cwd`; a failure becomes a refusal naming the command and its subject. */
-async function gemini(ctx: Context, argv: string[], subject: string, cwd: string | null, timeoutMs?: number): Promise<{ ok: true; output: string } | Refused> {
-  const result = await ctx.deps.exec.run('gemini', argv, cwd, timeoutMs ? { timeoutMs } : undefined)
+async function gemini(
+  ctx: Context,
+  argv: string[],
+  subject: string,
+  cwd: string | null,
+  options?: { timeoutMs?: number; closeStdin?: boolean }
+): Promise<{ ok: true; output: string } | Refused> {
+  const result = await ctx.deps.exec.run('gemini', argv, cwd, options)
   if (!result.ok) return refuse('cli', `${named(argv, subject)} failed: ${tail(result.output) || 'no output'}`)
   return { ok: true, output: result.output }
 }
+
+/** The question Gemini CLI asks on stdin before it accepts new permissions (requestConsentNonInteractive). */
+const CONSENT_PROMPT = /Do you want to (continue|trust this folder)|\[Y\/n\]|\[y\/N\]/
 
 const unchanged = (argv: string[], subject: string, file: string, output: string, say: (path: string) => string) =>
   refuse('cli', `${named(argv, subject)} did not change ${say(file)}: ${tail(output) || 'no output'}`)
@@ -182,10 +191,20 @@ async function updateExtension(ctx: Context, extension: Extension) {
   const guarded = await guard(ctx, [ctx.paths.enablement])
   if (!guarded.ok) return guarded
   const argv = ['extensions', 'update', extension.name]
-  const ran = await gemini(ctx, argv, extension.name, null, 120_000)
-  if (!ran.ok) {
-    return refuse('cli', `${ran.message} If the update asks to approve new permissions, run gemini extensions update ${extension.name} in a terminal.`)
+  // Gemini CLI 0.35.3 has no flag to approve an update's new permissions (`extensions update` takes only a name
+  // or --all; only `extensions install` has --consent), and asks on stdin. With stdin closed, that question ends
+  // the run at once instead of hanging until the timeout; this app never answers it for the user.
+  const result = await ctx.deps.exec.run('gemini', argv, null, { timeoutMs: 120_000, closeStdin: true })
+  if (CONSENT_PROMPT.test(result.output)) {
+    return refuse(
+      'needs-consent',
+      `${extension.name} asks to approve new permissions, and this app never approves them for you. To review and approve them, run this in a terminal: gemini extensions update ${extension.name}`
+    )
   }
+  if (!result.ok) {
+    return refuse('cli', `${named(argv, extension.name)} failed: ${tail(result.output) || 'no output'}. To see why, run this in a terminal: gemini extensions update ${extension.name}`)
+  }
+  const ran = { output: result.output }
   const manifest = await objectAt(ctx.deps, `${extension.dir}/gemini-extension.json`, false)
   const version = manifest !== null && typeof manifest.version === 'string' ? manifest.version : null
   if (version !== null && version !== extension.version) return done(`Updated ${extension.name} from ${extension.version ?? '?'} to ${version}.`)
