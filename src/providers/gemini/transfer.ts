@@ -1,9 +1,8 @@
 // 'copyToAgent' for Gemini CLI: MCP servers and skills out to another agent, and in from one.
 // Out: any server or skill the view shows (an export only reads). In:
 // - an MCP server through `gemini mcp add`, like a move (./actions.ts): the settings file is version checked and
-//   backed up, the CLI runs in the project for project scope, and the file is read back. The server is admitted
-//   against GEMINI_ADD (GEMINI_ADD_TEAM for a project) and written with the move's own argv builder, addArgv;
-//   argvLimits refuses env and header values add would change.
+//   backed up, the CLI runs in the project for project scope, and the file is read back. Move and import share
+//   destination admission, CLI encoding limits, and preparation of the guarded add effect.
 // - a skill folder is copied into Gemini CLI's own folder (~/.gemini/skills, <project>/.gemini/skills) with the
 //   toolkit's moveEntry: never overwriting, a link kept as a link. `gemini skills install` is not used: it
 //   overwrites a skill of the same name without asking and needs --consent. This app offers no skill remove for
@@ -14,19 +13,15 @@ import {
   GONE,
   itemKey,
   moveEntry,
-  optionLikeRefusal,
   portableMcp,
   shellQuote,
   skillEntry,
-  admitMcp,
-  unreadable,
   type Exported,
   type Portable,
   type ProviderDeps
 } from '../toolkit.ts'
-import { addArgv, argvLimits, change, contextOf, done, hasServer, mcpStep, refuse } from './actions.ts'
-import { GEMINI_ADD, GEMINI_ADD_TEAM } from './mcp-add.ts'
-import { settingsOf, type GeminiPaths } from './paths.ts'
+import { change, contextOf, done, prepareMcpAdd, refuse } from './actions.ts'
+import type { GeminiPaths } from './paths.ts'
 import { geminiMcpConfig, readSetup } from './read.ts'
 
 
@@ -48,8 +43,6 @@ export async function importGemini(deps: ProviderDeps, paths: GeminiPaths, item:
   if (project !== null && to.scope === 'local') {
     return refuse('refused', 'Gemini CLI has no only-me settings for a project: its .gemini folder is shared. Choose Team.')
   }
-  const place = project === null ? 'Global' : ctx.say(project)
-
   if (item.kind === 'skills') {
     const dirOf = (_kind: string, at: string | null) => (at === null ? `${paths.dir}/skills` : `${at}/.gemini/skills`)
     const copied = await moveEntry(deps.fs, { owner: 'Gemini CLI', projects: async () => setup.projects, dirOf }, skillEntry(item), project, true)
@@ -60,21 +53,10 @@ export async function importGemini(deps: ProviderDeps, paths: GeminiPaths, item:
     return done(`Copied skill "${item.name}" to ${ctx.say(copied.path)}. To remove it: ${remove}${project === null ? '' : ' (run in the project)'}`)
   }
 
-  const admitted = admitMcp(item, project === null ? GEMINI_ADD : GEMINI_ADD_TEAM)
-  if (!admitted.ok) return admitted
-  const limits = argvLimits(admitted.server)
-  if (limits !== null) return refuse('not-portable', limits)
-  for (const [value, what] of [
-    [item.name, 'The server name'],
-    [item.command ?? item.url ?? '', 'The command or url']
-  ] as const) {
-    const optionLike = optionLikeRefusal(value, what)
-    if (optionLike) return refuse('refused', optionLike.output)
-  }
-  const file = settingsOf(paths, project)
-  if (setup.places.find((p) => p.file === file)?.broken) return unreadable(ctx.say(file))
-  if (await hasServer(deps.fs, file, item.name)) return refuse('exists', `${place} already has an MCP server named ${item.name}. Rename or remove one of them first.`)
-  const added = await change(ctx, [file], [mcpStep(addArgv(admitted.server, project), item.name, project, file, true)])
+  const prepared = await prepareMcpAdd(ctx, setup, project, { kind: 'import', server: item })
+  if (!prepared.ok) return prepared
+  const { file, place, step } = prepared
+  const added = await change(ctx, [file], [step])
   if (!added.ok) return added
   return done(`Copied MCP server "${item.name}" to ${place} with gemini mcp add.`, { type: 'remove', key: itemKey('mcp', project, item.name) })
 }

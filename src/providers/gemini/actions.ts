@@ -21,6 +21,7 @@ import {
   type Clock,
   type FileSystem,
   type Json,
+  type PortableMcp,
   type ProviderDeps,
   type RestoreRequest,
   type Step
@@ -306,16 +307,16 @@ async function toggleMcp(ctx: Context, key: string, server: McpServer, blocked: 
   )
 }
 
-export const scopeArg = (project: string | null) => (project === null ? 'user' : 'project')
+const scopeArg = (project: string | null) => (project === null ? 'user' : 'project')
 
 /** Whether the settings file (JSON with comments) has an MCP server of this name. */
-export const hasServer = async (fs: FileSystem, file: string, name: string) => {
+const hasServer = async (fs: FileSystem, file: string, name: string) => {
   const settings = await objectAt(fs, file, true)
   return settings !== null && isObject(settings.mcpServers) && isObject(settings.mcpServers[name])
 }
 
 /** `gemini mcp add|remove` of `name` in `file`, proven by a re-read: the server is there after an add, gone after a remove. */
-export const mcpStep = (argv: string[], name: string, project: string | null, file: string, present: boolean) =>
+const mcpStep = (argv: string[], name: string, project: string | null, file: string, present: boolean) =>
   gemini(argv, name, project, file, async (fs) => (await hasServer(fs, file, name)) === present)
 
 async function removeMcp(ctx: Context, server: McpServer) {
@@ -331,7 +332,7 @@ type AdmittedServer = Extract<Admitted, { ok: true }>['server']
  * Argv encoding: env and header entries `gemini mcp add` would change. It splits each -e value at "=" and drops
  * empty ones, and trims header values; such entries are refused rather than written changed. Null when none.
  */
-export function argvLimits(server: AdmittedServer): string | null {
+function argvLimits(server: AdmittedServer): string | null {
   const env = Object.entries(server.env ?? {}).filter(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value === '' || value.includes('='))
   if (env.length > 0) {
     return `"${server.name}" has env entries gemini mcp add cannot write as they are (${env.map(([key]) => key).join(', ')}): it splits each at "=" and drops empty values.`
@@ -347,7 +348,7 @@ export function argvLimits(server: AdmittedServer): string | null {
  * `gemini mcp add` for an admitted server, a move's or an import's: options first (each takes one value), then
  * name and command (args after `--`) or url.
  */
-export function addArgv(server: AdmittedServer, project: string | null): string[] {
+function addArgv(server: AdmittedServer, project: string | null): string[] {
   const { rest } = server
   const options = [
     ...(typeof rest.timeout === 'number' ? [`--timeout=${rest.timeout}`] : []),
@@ -360,26 +361,43 @@ export function addArgv(server: AdmittedServer, project: string | null): string[
   return ['mcp', 'add', '--scope', scopeArg(project), '--transport', server.transport, ...options, ...env, ...headers, server.name, ...tail]
 }
 
+type McpAddSource = { kind: 'move'; server: McpServer } | { kind: 'import'; server: PortableMcp }
+
+/** Prepare the destination effect; the caller composes it with any source removal in one guarded change. */
+export async function prepareMcpAdd(ctx: Context, setup: Setup, project: string | null, source: McpAddSource) {
+  const { name } = source.server
+  const config = source.kind === 'move' ? geminiMcpConfig(name, source.server.config) : source.server
+  const admitted = admitMcp(config, project === null ? GEMINI_ADD : GEMINI_ADD_TEAM)
+  if (!admitted.ok) {
+    return source.kind === 'move' && admitted.reason !== 'secret' ? refuse('not-movable', admitted.message) : admitted
+  }
+  const limits = argvLimits(admitted.server)
+  if (limits !== null) return refuse(source.kind === 'move' ? 'not-movable' : 'not-portable', limits)
+  // Existing Gemini items have their name checked before action dispatch; imports have not passed that check.
+  if (source.kind === 'import') {
+    const named = optionLikeRefusal(name, 'The server name')
+    if (named) return refuse('refused', named.output)
+  }
+  const commandOrUrl = source.kind === 'import' ? source.server : admitted.server
+  const optionLike = optionLikeRefusal(commandOrUrl.command ?? commandOrUrl.url ?? '', 'The command or url')
+  if (optionLike) return refuse('refused', optionLike.output)
+  const file = settingsOf(ctx.paths, project)
+  const place = project === null ? 'Global' : ctx.say(project)
+  if (setup.places.find((p) => p.file === file)?.broken) return unreadable(ctx.say(file))
+  if (await hasServer(ctx.deps.fs, file, name)) return refuse('exists', `${place} already has an MCP server named ${name}. Rename or remove one of them first.`)
+  return { ok: true as const, file, place, step: mcpStep(addArgv(admitted.server, project), name, project, file, true) }
+}
+
 async function moveMcp(ctx: Context, setup: Setup, server: McpServer, to: { project: string | null; scope?: string }, copy: boolean) {
   const destination = to?.project ?? null
-  const place = destination === null ? 'Global' : ctx.say(destination)
   if (destination !== null && !setup.projects.includes(destination)) return refuse('unknown-project', `${destination} is not a project Gemini CLI knows.`)
   if (destination !== null && to.scope === 'local') {
     return refuse('refused', 'Gemini CLI has no only-me settings for a project: its .gemini/settings.json is shared. Choose Team.')
   }
   if (destination === server.project) return refuse('same-place', `"${server.name}" is already there.`)
-  const admitted = admitMcp(geminiMcpConfig(server.name, server.config), destination === null ? GEMINI_ADD : GEMINI_ADD_TEAM)
-  if (!admitted.ok) return admitted.reason === 'secret' ? admitted : refuse('not-movable', admitted.message)
-  const limits = argvLimits(admitted.server)
-  if (limits !== null) return refuse('not-movable', limits)
-  const optionLike = optionLikeRefusal(admitted.server.command ?? admitted.server.url ?? '', 'The command or url')
-  if (optionLike) return refuse('refused', optionLike.output)
-  const file = settingsOf(ctx.paths, destination)
-  const destinationPlace = setup.places.find((p) => p.file === file)
-  if (destinationPlace?.broken) return unreadable(ctx.say(file))
-  if (await hasServer(ctx.deps.fs, file, server.name)) return refuse('exists', `${place} already has an MCP server named ${server.name}. Rename or remove one of them first.`)
-
-  const add = mcpStep(addArgv(admitted.server, destination), server.name, destination, file, true)
+  const prepared = await prepareMcpAdd(ctx, setup, destination, { kind: 'move', server })
+  if (!prepared.ok) return prepared
+  const { file, place, step: add } = prepared
   const remove = mcpStep(['mcp', 'remove', '--scope', scopeArg(server.project), server.name], server.name, server.project, server.file, false)
   const ran = await change(ctx, copy ? [file] : [file, server.file], copy ? [add] : [add, remove])
   if (!ran.ok) return ran
